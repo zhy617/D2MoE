@@ -1,5 +1,5 @@
 # $D^2$-MoE
-> **[$D^2$-MoE: Delta Decompression for MoE-based LLMs Compression](https://arxiv.org/abs/2306.00978)**   
+> **[$D^2$-MoE: Delta Decompression for MoE-based LLMs Compression](https://arxiv.org/abs/2502.17298)**   
 > *Hao Gu<sup>1</sup>, Wei Li<sup>2</sup>, Lujun Li<sup>1</sup>, Qiyuan Zhu<sup>1</sup>, Mark Lee<sup>2</sup>, Shengjie Sun<sup>3</sup>, Wei Xue<sup>1</sup>, Yike Guo<sup>1</sup>*   
 > *<sup>1</sup>Hong Kong University of Science and Technology,   <sup>2</sup>University of Birmingham,   <sup>3</sup>AISpeech Co* 
 
