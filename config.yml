@@ -1,0 +1,31 @@
+---
+# control
+control:
+  data_name: fpb-sa
+  model_name: bart
+  task_name: s2s
+  batch_size: 8
+  max_seq_len: 128
+  prune_ratio: 0.1
+  # ppwandasp / wandasp / flap
+  prune_metric: ppwanda
+  # flap-default / wandasp-default / probe-default
+  prune_method: probe-default
+  mode: sync
+  calib_info: None/ds-numsamples
+  prune_info: None
+  cust_tgt_modules: None
+
+# experiment
+pin_memory: True
+num_workers: 0
+init_seed: 0
+num_experiments: 1
+log_interval: 0.25
+device: cpu
+world_size: 1
+resume_mode: 0
+verbose: False
+
+
+# python verify.py --control_name fpb-sa_test_s2s_8_pq-h-1-0.2-1#2-max_inter_somemethods-3
