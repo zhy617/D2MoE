@@ -1,9 +1,145 @@
+from dataclasses import dataclass, field
+from typing import Optional, List, Literal
 import torch
 import time
 from dataset import collate
 from config import cfg
 from module import model_forward, update_model_prof, to_device
 from datetime import datetime
+from tqdm import tqdm
+from transformers import TrainingArguments
+from torch.nn.utils.rnn import pad_sequence
+from peft import PeftModel, LoraConfig, get_peft_model
+import numpy as np
+import transformers
+
+def print_memory_usage():
+    total_gpus = torch.cuda.device_count()
+    total_allocated = 0
+    total_reserved = 0
+    
+    for i in range(total_gpus):
+        allocated = torch.cuda.memory_allocated(device=i) / 1024 / 1024
+        reserved = torch.cuda.memory_reserved(device=i) / 1024 / 1024
+        total_allocated += allocated
+        total_reserved += reserved
+        # print(f"GPU {i} - Allocated: {allocated:.2f} MiB, Reserved: {reserved:.2f} MiB")
+    
+    # print(f"Total - Allocated: {total_allocated:.2f} MiB, Reserved: {total_reserved:.2f} MiB")
+    
+    return total_allocated, total_reserved
+
+
+@torch.no_grad()
+def ppl_eval_sharing(model, tokenizer, experiment_name, datasets=['wikitext2', 'ptb', 'c4'], model_seq_len=2048, batch_size=16, params_only=False):
+    seed = 42  # or any other integer
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    def _perplexity(nlls, n_samples, seqlen):
+        return torch.exp(torch.stack(nlls).sum() / (n_samples * seqlen))
+
+    model.eval()
+    ppls = {}
+    total_allocated_list = []
+    total_reserved_list = []
+
+    # main_device = next(model.parameters()).device
+    main_device = list(model.parameters())[-1].device
+    if not params_only:
+        for dataset in datasets:
+            # 对于其他数据集，使用原有的加载方式
+            data = get_test_data(dataset, tokenizer, seq_len=model_seq_len, batch_size=batch_size)
+
+            seqlen = model_seq_len
+            n_samples = len(data)
+            nlls = []
+
+            with tqdm(range(n_samples), desc=f"Evaluating {dataset} - Perplexity") as progress_bar:
+                for i in progress_bar:
+                    batch = next(iter(data)).to(main_device)
+
+                    allocated, reserved = print_memory_usage()
+                    total_allocated_list.append(allocated)
+                    total_reserved_list.append(reserved)
+
+                    with torch.no_grad():
+                        output = model(batch)
+                        logits = output.logits if hasattr(output, "logits") else output[0]
+
+                    # 确保 logits 在正确的设备上
+                    logits = logits.to(main_device)
+                    shift_logits = logits[:, :-1, :].contiguous().float()
+                    shift_labels = batch[:, 1:].contiguous()
+
+                    loss_fct = torch.nn.CrossEntropyLoss()
+                    loss = loss_fct(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1)
+                    )
+                    neg_log_likelihood = loss.float() * seqlen
+                    nlls.append(neg_log_likelihood)
+
+                    curr_ppl = _perplexity(nlls, i + 1, seqlen)
+                    progress_bar.set_description(f"Evaluating {dataset} - Perplexity {curr_ppl:.3f}")
+
+            ppl = _perplexity(nlls, n_samples, seqlen)
+            ppls[dataset] = ppl.item()
+
+
+    # 计算参数统计
+    total_params = sum(p.numel() for p in model.parameters())
+    # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # non_trainable_params = total_params - trainable_params
+    threshold = 1e-6
+    non_zero_params = sum((p.abs() > threshold).sum().item() for p in model.parameters())
+
+    # 检查 SVD 压缩的 Mixtral 特性
+    # svd_layers = sum(1 for m in model.modules() if isinstance(m, SVD_MixtralSparseMoeBlock))
+    print("\n")
+    result_str = f"Experiment: {experiment_name}\n"
+    if not params_only:
+        avg_allocated = sum(total_allocated_list) / len(total_allocated_list)
+        avg_reserved = sum(total_reserved_list) / len(total_reserved_list)
+        result_str += f"PPL after evaluation: {ppls}\n"
+        result_str += f"Average Allocated Memory: {avg_allocated:.2f} MiB\n"
+        result_str += f"Average Reserved Memory: {avg_reserved:.2f} MiB\n"
+    
+    result_str += f"Total number of parameters: {total_params / 1e9:.2f}B\n"
+    # result_str += f"Number of trainable parameters: {trainable_params / 1e9:.2f}B\n"
+    # result_str += f"Number of non-trainable parameters: {non_trainable_params / 1e9:.2f}B\n"
+    result_str += f"Number of non-zero parameters: {non_zero_params / 1e9:.2f}B\n"
+    if "Mixtral" in experiment_name:
+        org_params = 46.70e9
+        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
+        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
+
+    elif "Llamix" in experiment_name:
+        org_params = 0.40e9
+        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
+        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
+
+    elif "PhiMoE" in experiment_name:
+        org_params = 41.83e9
+        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
+        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
+    
+    elif "deepseek" in experiment_name:
+        org_params = 16.38e9
+        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
+        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
+
+    elif "Qwen" in experiment_name or "qwen" in experiment_name:
+        org_params = 57.41e9
+        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
+        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
+    else:
+        pass
+
+    print(result_str)
+    return result_str
 
 def identify_pad_tokens(input):
     pad_tokens = input['input_ids'] == cfg['tokenizer'].pad_token if cfg['tokenizer'].pad_token is not None else cfg['tokenizer'].eos_token
@@ -391,7 +527,6 @@ def run_lm_eval(model, tokenizer, batch_size=16, task_names=["openbookqa", "arc_
     from datetime import datetime
     import os
     import torch
-    import numpy as np
 
     results = evaluator.simple_evaluate(
         model=model,
@@ -489,351 +624,407 @@ def get_calib_train_data(name, tokenizer, nsamples, seqlen=2048, seed=3, batch_s
 
 
 
-def get_wikitext2(nsamples, seed, seqlen, tokenizer, dataset_cache_dir=None):
-    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train', cache_dir=dataset_cache_dir)
-    testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test', cache_dir=dataset_cache_dir)
-
-    trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
-    testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
-
-    import random
-    random.seed(seed)
-    trainloader = []
-    for _ in range(nsamples):
-        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        inp = trainenc.input_ids[:, i:j]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
-    return trainloader, testenc
-
-def get_ptb(nsamples, seed, seqlen, tokenizer, dataset_cache_dir=None):
-    traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train', cache_dir=dataset_cache_dir)
-    valdata = load_dataset('ptb_text_only', 'penn_treebank', split='validation', cache_dir=dataset_cache_dir)
-
-    trainenc = tokenizer("\n\n".join(traindata['sentence']), return_tensors='pt')
-    testenc = tokenizer("\n\n".join(valdata['sentence']), return_tensors='pt')
-
-    import random
-    random.seed(seed)
-    trainloader = []
-    for _ in range(nsamples):
-        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        inp = trainenc.input_ids[:, i:j]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
-    return trainloader, testenc
-
-def get_c4(nsamples, seed, seqlen, tokenizer):
-    traindata = load_dataset("json", data_files="utils/c4-train.json")['train']
-    valdata = load_dataset("json", data_files="utils/c4-validation.json")['train']
-
-    import random
-    random.seed(seed)
-    trainloader = []
-    for _ in range(nsamples):
-        while True:
-            i = random.randint(0, len(traindata) - 1)
-            trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
-            if trainenc.input_ids.shape[1] >= seqlen:
-                break
-        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        inp = trainenc.input_ids[:, i:j]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
-
-    import random
-    random.seed(0)
-    valenc = []
-    for _ in range(256):
-        while True:
-            i = random.randint(0, len(valdata) - 1)
-            tmp = tokenizer(valdata[i]['text'], return_tensors='pt')
-            if tmp.input_ids.shape[1] >= seqlen:
-                break
-        i = random.randint(0, tmp.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        valenc.append(tmp.input_ids[:, i:j])
-    valenc = torch.hstack(valenc)
-    class TokenizerWrapper:
-        def __init__(self, input_ids):
-            self.input_ids = input_ids
-    valenc = TokenizerWrapper(valenc)
-
-    return trainloader, valenc 
-
-
-
-def get_ptb_new(nsamples, seed, seqlen, tokenizer, dataset_cache_dir=None):
-    from datasets import load_dataset
-    traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train', cache_dir=dataset_cache_dir)
-    testdata = load_dataset('ptb_text_only', 'penn_treebank', split='test', cache_dir=dataset_cache_dir)
-
-    trainenc = tokenizer(" ".join(traindata['sentence']), return_tensors='pt')
-    testenc = tokenizer(" ".join(testdata['sentence']), return_tensors='pt')
-
-    import random
-    random.seed(seed)
-    trainloader = []
-    for _ in range(nsamples):
-        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        inp = trainenc.input_ids[:, i:j]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
-    return trainloader, testenc
-
-def get_c4_new(nsamples, seed, seqlen, tokenizer):
-    traindata = load_dataset("json", data_files="utils/c4-train.json")['train']
-    valdata = load_dataset("json", data_files="utils/c4-validation.json")['train']
-
-    import random
-    random.seed(seed)
-    trainloader = []
-    for _ in range(nsamples):
-        while True:
-            i = random.randint(0, len(traindata) - 1)
-            trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
-            if trainenc.input_ids.shape[1] >= seqlen:
-                break
-        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        inp = trainenc.input_ids[:, i:j]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
-
-    valenc = tokenizer(' '.join(valdata[:1100]['text']), return_tensors='pt')
-    valenc = valenc.input_ids[:, :(256 * seqlen)]
-
-    class TokenizerWrapper:
-        def __init__(self, input_ids):
-            self.input_ids = input_ids
-    valenc = TokenizerWrapper(valenc)
-
-    return trainloader, valenc
-def get_loaders(name, nsamples=128, seed=0, seqlen=2048, tokenizer=None):
-    if 'wikitext2' in name:
-        return get_wikitext2(nsamples, seed, seqlen, tokenizer)
-    if 'ptb' in name:
-        if 'new' in name:
-            return get_ptb_new(nsamples, seed, seqlen, tokenizer)
-        return get_ptb(nsamples, seed, seqlen, tokenizer)
-    if 'c4' in name:
-        if 'new' in name:
-            return get_c4_new(nsamples, seed, seqlen, tokenizer)
-        return get_c4(nsamples, seed, seqlen, tokenizer)
+# def get_wikitext2(script_args, nsamples, seqlen, tokenizer, model=None):
+#     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+#     tot_text = "\n\n".join(traindata["text"])
+#     traindataset = []
     
+#     # 使用滑动窗口而非随机采样
+#     stride = len(tot_text) // (nsamples * 2)  # 确保有足够的样本
     
+#     for i in tqdm(range(0, len(tot_text) - seqlen, stride)[:nsamples], desc="Generating WikiText2 samples"):
+#         txt = tot_text[i:i+seqlen]
+#         # 移除随机选择句子的逻辑
+#         # 使用固定的序列长度
+#         trainenc = tokenizer(txt, truncation=True, padding='max_length', max_length=seqlen, return_tensors="pt")
+        
+#         if trainenc.input_ids.shape[1] >= seqlen // 2:
+#             sample = {
+#                 "input_ids": trainenc.input_ids[0, :seqlen],
+#                 "attention_mask": trainenc.attention_mask[0, :seqlen]
+#             }
+            
+#             if script_args.use_improved_lora and model is not None:
+#                 try:
+#                     with torch.no_grad():
+#                         outputs = model(
+#                             input_ids=trainenc.input_ids.to(model.device),
+#                             attention_mask=trainenc.attention_mask.to(model.device)
+#                         )
+#                         # 确保 dense_logits 是浮点类型并且其 vocab_size 与 tokenizer 一致
+#                         if outputs.logits.shape[-1] != tokenizer.vocab_size:
+#                             raise ValueError(f"Model logits vocab_size {outputs.logits.shape[-1]} does not match tokenizer vocab_size {tokenizer.vocab_size}.")
+#                         sample["dense_logits"] = outputs.logits[0, :seqlen].to(torch.float32).cpu()
+#                         print("Successfully generated dense_logits for sample")
+#                 except Exception as e:
+#                     print(f"Error generating dense_logits: {e}")
+#                     script_args.use_improved_lora = False
+            
+#             traindataset.append(sample)
     
-def get_test_data(name, tokenizer, seq_len=2048, batch_size = 4):
-    class IndexDataset(Dataset):
-        def __init__(self, tensors):
-            self.tensors = tensors
+#     # 验证数据集
+#     if script_args.use_improved_lora:
+#         has_dense_logits = all('dense_logits' in item for item in traindataset)
+#         print(f"Dataset validation: {len(traindataset)} samples, all have dense_logits: {has_dense_logits}")
+#         if not has_dense_logits:
+#             raise ValueError("Not all samples have dense_logits.")
+    
+#     random.shuffle(traindataset)
+#     return traindataset
 
-        def __getitem__(self, index):
-            return self.tensors[index]
+def get_wikitext2(script_args, nsamples, seqlen, tokenizer):
+    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+    tot_text = "\n\n".join(traindata["text"])
+    traindataset = []
+    
+    # 使用更大的上下文窗口
+    context_window = seqlen * 20  # 增加上下文窗口大小
+    
+    for _ in tqdm(range(nsamples), desc="Generating WikiText2 samples"):
+        # 随机选择起始位置
+        i = random.randint(0, max(0, len(tot_text) - context_window - 1))
+        txt = tot_text[i:i+context_window]
+        
+        # 随机选择句子起始点
+        sentences = txt.split('.')
+        if len(sentences) > 1:
+            start_sentence = random.randint(0, len(sentences) - 1)
+            txt = '.'.join(sentences[start_sentence:])
+        
+        # 动态调整序列长度
+        actual_seqlen = random.randint(seqlen // 2, seqlen)
+        
+        trainenc = tokenizer(txt, truncation=True, padding='max_length', max_length=actual_seqlen, return_tensors="pt")
+        if trainenc.input_ids.shape[1] >= actual_seqlen // 2:  # 允许更短的序列，增加多样性
+            traindataset.append({
+                "input_ids": trainenc.input_ids[:, :actual_seqlen],
+                "attention_mask": trainenc.attention_mask[:, :actual_seqlen]
+            })
+    
+    # 打乱数据集
+    random.shuffle(traindataset)
+    return traindataset
+
+def get_dolly(script_args, nsamples, seqlen, tokenizer):
+    traindata = load_dataset("databricks/databricks-dolly-15k", split='train')
+    traindataset = []
+    
+    # 确保 nsamples 不超过数据集大小
+    nsamples = min(nsamples, len(traindata))
+    
+    for i in tqdm(range(nsamples), desc="Processing Dolly samples"):
+        sample = traindata[i]
+        txt = []
+        
+        # 使用 get 方法来安全地获取字段，并添加适当的前缀
+        if "instruction" in sample:
+            txt.append(f"Instruction: {sample.get('instruction', '')}")
+        if 'context' in sample:
+            txt.append(f"Context: {sample.get('context', '')}")
+        if 'response' in sample:
+            txt.append(f"Response: {sample.get('response', '')}")
+        
+        # 用换行符连接不同部分
+        full_text = "\n\n".join(txt)
+        
+        # Tokenize
+        tokenized = tokenizer(full_text, truncation=True, padding='max_length', max_length=seqlen, return_tensors="pt")
+        
+        if tokenized.input_ids.shape[1] >= seqlen // 2:  # 保持原有的长度检查逻辑
+            traindataset.append({
+                "input_ids": tokenized.input_ids.squeeze(0),
+                "attention_mask": tokenized.attention_mask.squeeze(0)
+            })
+    
+    return traindataset
+
+def print_lora_layers(model):
+    for name, module in model.named_modules():
+        if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+            print(f"LoRA applied to layer: {name}")
+@dataclass
+class TrainingArguments(transformers.TrainingArguments):
+    model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
+    adapter_name_or_path: Optional[str] = field(default=None)
+    data_path: str = field(default=None, metadata={"help": "Path to the training data."})
+    dataset_split: str = field(default="train[:100000]", metadata={"help": "(`['train', 'test', 'eval']`):"})
+    dataset_field: List[str] = field(default=None, metadata={"help": "Fields of dataset input and output."})
+    optim: str = field(default="adamw_torch")
+    model_max_length: int = field(default=512, metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."})
+    lora_r: int = field(default=64, metadata={"help": "The rank of the adapter. When passing `None` and `adapter_name_or_path` is also `None`, full fine-tuning is used."})
+    init_lora_weights: Literal[True, "pissa",'loftq','gaussian'] = field(default=True, metadata={"help": ("Passing True (default) results in the LoRA initialization. Passing `pissa` results in PiSSA initialization.")})
+    cache_file: str = field(default=None)
+    nsamples: int = field(default=None, metadata={"help": "Number of training samples to use"})
+    dataset_name: str = field(default="wikitext", metadata={"help": "Name of the dataset to use. Options: 'wikitext' or 'dolly'"})
+    use_improved_lora: bool = field(default=True, metadata={"help": "Whether to use improved LoRA or standard LoRA."})
+    sample_fraction: float = field(default=1, metadata={"help": "Fraction of samples to use for training"})
+    learning_rate: float = field(default=3e-5, metadata={"help": "Initial learning rate for AdamW optimizer."})
+    lr_scheduler_type: str = field(default="linear", metadata={"help": "Type of learning rate scheduler."})
+    warmup_steps: int = field(default=500, metadata={"help": "Number of warmup steps for learning rate scheduler."})
+    logging_steps: int = field(default=100, metadata={"help": "Log metrics every X updates steps."})  # 日志打印步数
+
+@dataclass
+class ScriptArguments(TrainingArguments):
+    model_name_or_path: str = None
+    dataset_name: str = None
+    dataset_split: str = "train"
+    dataset_field: str = "query response"
+    nsamples: int = 5000
+    cache_file: str = None
+    init_lora_weights: str = "gaussian"
+    lora_r: int = 64
+    use_improved_lora: bool = False
+    adapter_name_or_path: str = None
+
+
+def train(model, tokenizer, script_args):
+
+    model.train()
+
+    import wandb
+    wandb.init(
+        project="mixtral-moe-training",  # 项目名称
+        name=script_args.output_dir.split('/')[-1],  # 实验名称
+        config={
+            "learning_rate": script_args.learning_rate,
+            "scheduler": script_args.lr_scheduler_type,
+            "batch_size": script_args.per_device_train_batch_size,
+            "lora_r": script_args.lora_r,
+            "nsamples": script_args.nsamples,
+            "model_name": script_args.model_name_or_path,
+        }
+    )
+
+    # 输出当前的学习率和调度策略
+    print(f"Using learning rate: {script_args.learning_rate}")
+    print(f"Using learning rate scheduler: {script_args.lr_scheduler_type}")
+    
+    # 确认 tokenizer 的 vocab_size
+    print(f"Tokenizer vocab size: {tokenizer.vocab_size}")
+    
+    # 获取训练数据
+    train_data = get_wikitext2(script_args, script_args.nsamples, 2048, tokenizer)
+    # train_data = get_dolly(script_args, script_args.nsamples, 2048, tokenizer)
+
+    class WikiTextDataset(Dataset):
+        def __init__(self, data):
+            self.data = data
 
         def __len__(self):
-            return len(self.tensors)
-    ####
-    def process_data(samples, tokenizer, seq_len, field_name):
-        # 处理流式数据集
-        if hasattr(samples, '_ex_iterable'):  # 检查是否为流式数据集
-            all_text = []
-            for sample in samples:
-                all_text.append(sample[field_name])
-            text = "\n\n".join(all_text)
-        elif isinstance(samples, list):  # 处理C4数据集的情况
-            text = "\n\n".join(sample[field_name] for sample in samples)
-        else:
-            text = "\n\n".join(samples[field_name])
-            
-        test_ids = tokenizer(text, return_tensors='pt').input_ids[0]
-        test_ids_batch = []
-        nsamples = test_ids.numel() // seq_len
+            return len(self.data)
 
-        for i in range(nsamples):
-            batch = test_ids[(i * seq_len):((i + 1) * seq_len)]
-            test_ids_batch.append(batch)
-        test_ids_batch = torch.stack(test_ids_batch)
-        return IndexDataset(tensors=test_ids_batch)
-    ####
-    if 'wikitext2' in name:
-        test_data = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test', trust_remote_code=True)
-        test_dataset = process_data(test_data, tokenizer, seq_len, 'text')
-    if 'ptb' in name:
-        test_data = load_dataset('ptb_text_only', 'penn_treebank', split='test', trust_remote_code=True)
-        test_dataset = process_data(test_data, tokenizer, seq_len, 'sentence')
-    elif 'c4' in name:
-        traindata = load_dataset(
-            'allenai/c4', 
-            'en', 
-            data_files={'train': ['en/c4-train.00000-of-01024.json.gz']},
-            streaming=True, trust_remote_code=True  # 使用流式加载来处理大数据集
-        )['train']
+        def __getitem__(self, idx):
+            return self.data[idx]
+    
+    train_data = WikiTextDataset(train_data)
+    
+
+    def custom_collate_fn(batch):
+        # 提取输入ID和注意力掩码
+        input_ids = []
+        attention_mask = []
         
-        # Convert streaming dataset to list and randomly sample 5000 items
-        all_data = []
-        for item in traindata:
-            all_data.append(item)
-            if len(all_data) >= 10000:  # Collect slightly more than needed to ensure enough valid samples
-                break
+        # 找出最大序列长度
+        max_length = max(item['input_ids'].size(0) for item in batch)
+        
+        for item in batch:
+            # 确保所有序列都是一维的
+            if len(item['input_ids'].shape) > 1:
+                item_input_ids = item['input_ids'].squeeze(0)
+                item_attention_mask = item['attention_mask'].squeeze(0)
+            else:
+                item_input_ids = item['input_ids']
+                item_attention_mask = item['attention_mask']
+            
+            # 如果序列长度不一致，进行填充或截断
+            if item_input_ids.size(0) < max_length:
+                # 填充
+                pad_length = max_length - item_input_ids.size(0)
+                pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
                 
-        random.seed(42)  # Set seed for reproducibility
-        traindata = random.sample(all_data, 5000)
-        test_dataset = process_data(traindata, tokenizer, seq_len, 'text')
-        # trainloader = []
-        # # 遍历整个数据集
-        # for i in range(len(traindata)):
-        #     trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
-        #     # 如果文本长度足够，进行处理
-        #     if trainenc.input_ids.shape[1] >= seq_len:
-        #         # 对于较长的文本，可以滑动窗口获取多个序列
-        #         for start_idx in range(0, trainenc.input_ids.shape[1] - seq_len, seq_len):
-        #             inp = trainenc.input_ids[:, start_idx:start_idx + seq_len]
-        #             tar = inp.clone()
-        #             tar[:, :-1] = -100
-        #             trainloader.append((inp, tar))
-
-        # return trainloader
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    return test_loader
-
-def print_memory_usage():
-    total_gpus = torch.cuda.device_count()
-    total_allocated = 0
-    total_reserved = 0
+                item_input_ids = torch.cat([
+                    item_input_ids, 
+                    torch.full((pad_length,), pad_id, dtype=item_input_ids.dtype)
+                ])
+                
+                item_attention_mask = torch.cat([
+                    item_attention_mask, 
+                    torch.zeros(pad_length, dtype=item_attention_mask.dtype)
+                ])
+            elif item_input_ids.size(0) > max_length:
+                # 截断
+                item_input_ids = item_input_ids[:max_length]
+                item_attention_mask = item_attention_mask[:max_length]
+            
+            input_ids.append(item_input_ids)
+            attention_mask.append(item_attention_mask)
+        
+        # 堆叠为批次
+        input_ids_batch = torch.stack(input_ids)
+        attention_mask_batch = torch.stack(attention_mask)
+        
+        # 检查是否使用improved_lora
+        if script_args.use_improved_lora and 'dense_logits' in batch[0]:
+            dense_logits = []
+            for item in batch:
+                if len(item['dense_logits'].shape) > 2:
+                    item_dense_logits = item['dense_logits'].squeeze(0)
+                else:
+                    item_dense_logits = item['dense_logits']
+                
+                # 确保dense_logits与input_ids长度一致
+                if item_dense_logits.size(0) < max_length:
+                    pad_length = max_length - item_dense_logits.size(0)
+                    vocab_size = item_dense_logits.size(1)
+                    item_dense_logits = torch.cat([
+                        item_dense_logits,
+                        torch.zeros((pad_length, vocab_size), dtype=item_dense_logits.dtype)
+                    ])
+                elif item_dense_logits.size(0) > max_length:
+                    item_dense_logits = item_dense_logits[:max_length]
+                
+                dense_logits.append(item_dense_logits)
+            
+            dense_logits_batch = torch.stack(dense_logits)
+            return {
+                'input_ids': input_ids_batch,
+                'attention_mask': attention_mask_batch,
+                'dense_logits': dense_logits_batch
+            }
+        else:
+            return {
+                'input_ids': input_ids_batch,
+                'attention_mask': attention_mask_batch
+            }
     
-    for i in range(total_gpus):
-        allocated = torch.cuda.memory_allocated(device=i) / 1024 / 1024
-        reserved = torch.cuda.memory_reserved(device=i) / 1024 / 1024
-        total_allocated += allocated
-        total_reserved += reserved
-        # print(f"GPU {i} - Allocated: {allocated:.2f} MiB, Reserved: {reserved:.2f} MiB")
-    
-    # print(f"Total - Allocated: {total_allocated:.2f} MiB, Reserved: {total_reserved:.2f} MiB")
-    
-    return total_allocated, total_reserved
+    target_modules = ["q_proj", "o_proj", "k_proj", "v_proj",
+                      "w1","w2","w3",
+                      "delta_u1","delta_u2","delta_u3",
+                      "delta_v1","delta_v2","delta_v3",
+                      "experts_delta_v1_shared","experts_delta_v2_shared","experts_delta_v3_shared"]  
 
+    # "block_sparse_moe.Wmean1", "block_sparse_moe.Wmean2", "block_sparse_moe.Wmean3",
 
+    # target_modules = ["q_proj", "o_proj", "k_proj", "v_proj", "w1","w2","w3",
+    #                   "delta_u1","delta_u2","delta_u3"]  
 
-import numpy as np
-from tqdm import tqdm
-
-@torch.no_grad()
-def ppl_eval_sharing(model, tokenizer, experiment_name, datasets=['wikitext2', 'ptb', 'c4'], model_seq_len=2048, batch_size=16, params_only=False):
-    seed = 42  # or any other integer
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    def _perplexity(nlls, n_samples, seqlen):
-        return torch.exp(torch.stack(nlls).sum() / (n_samples * seqlen))
-
-    model.eval()
-    ppls = {}
-    total_allocated_list = []
-    total_reserved_list = []
-
-    # main_device = next(model.parameters()).device
-    main_device = list(model.parameters())[-1].device
-    if not params_only:
-        for dataset in datasets:
-            # 对于其他数据集，使用原有的加载方式
-            data = get_test_data(dataset, tokenizer, seq_len=model_seq_len, batch_size=batch_size)
-
-            seqlen = model_seq_len
-            n_samples = len(data)
-            nlls = []
-
-            with tqdm(range(n_samples), desc=f"Evaluating {dataset} - Perplexity") as progress_bar:
-                for i in progress_bar:
-                    batch = next(iter(data)).to(main_device)
-
-                    allocated, reserved = print_memory_usage()
-                    total_allocated_list.append(allocated)
-                    total_reserved_list.append(reserved)
-
-                    with torch.no_grad():
-                        output = model(batch)
-                        logits = output.logits if hasattr(output, "logits") else output[0]
-
-                    # 确保 logits 在正确的设备上
-                    logits = logits.to(main_device)
-                    shift_logits = logits[:, :-1, :].contiguous().float()
-                    shift_labels = batch[:, 1:].contiguous()
-
-                    loss_fct = torch.nn.CrossEntropyLoss()
-                    loss = loss_fct(
-                        shift_logits.view(-1, shift_logits.size(-1)),
-                        shift_labels.view(-1)
-                    )
-                    neg_log_likelihood = loss.float() * seqlen
-                    nlls.append(neg_log_likelihood)
-
-                    curr_ppl = _perplexity(nlls, i + 1, seqlen)
-                    progress_bar.set_description(f"Evaluating {dataset} - Perplexity {curr_ppl:.3f}")
-
-            ppl = _perplexity(nlls, n_samples, seqlen)
-            ppls[dataset] = ppl.item()
-
-
-    # 计算参数统计
-    total_params = sum(p.numel() for p in model.parameters())
-    # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    # non_trainable_params = total_params - trainable_params
-    threshold = 1e-6
-    non_zero_params = sum((p.abs() > threshold).sum().item() for p in model.parameters())
-
-    # 检查 SVD 压缩的 Mixtral 特性
-    # svd_layers = sum(1 for m in model.modules() if isinstance(m, SVD_MixtralSparseMoeBlock))
-    print("\n")
-    result_str = f"Experiment: {experiment_name}\n"
-    if not params_only:
-        avg_allocated = sum(total_allocated_list) / len(total_allocated_list)
-        avg_reserved = sum(total_reserved_list) / len(total_reserved_list)
-        result_str += f"PPL after evaluation: {ppls}\n"
-        result_str += f"Average Allocated Memory: {avg_allocated:.2f} MiB\n"
-        result_str += f"Average Reserved Memory: {avg_reserved:.2f} MiB\n"
-    
-    result_str += f"Total number of parameters: {total_params / 1e9:.2f}B\n"
-    # result_str += f"Number of trainable parameters: {trainable_params / 1e9:.2f}B\n"
-    # result_str += f"Number of non-trainable parameters: {non_trainable_params / 1e9:.2f}B\n"
-    result_str += f"Number of non-zero parameters: {non_zero_params / 1e9:.2f}B\n"
-    if "Mixtral" in experiment_name:
-        org_params = 46.70e9
-        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
-        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
-
-    elif "Llamix" in experiment_name:
-        org_params = 0.40e9
-        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
-        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
-
-    elif "PhiMoE" in experiment_name:
-        org_params = 41.83e9
-        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
-        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
-    
-    elif "deepseek" in experiment_name:
-        org_params = 16.38e9
-        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
-        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
-
-    elif "Qwen" in experiment_name or "qwen" in experiment_name:
-        org_params = 57.41e9
-        result_str += f"Compression ratio: {1 - (total_params / org_params):.2f}%\n"
-        result_str += f"Save ratio: {total_params / org_params:.2f}%\n"
+    if script_args.adapter_name_or_path is not None:
+        print(f"Load {script_args.init_lora_weights} from {script_args.adapter_name_or_path}")
+        model = PeftModel.from_pretrained(
+            model,
+            is_trainable=True
+        )
+    elif script_args.lora_r is not None:
+        print(f"Initialized {script_args.init_lora_weights} layers")
+        lora_config = LoraConfig(
+            r=script_args.lora_r,
+            init_lora_weights=script_args.init_lora_weights,
+            target_modules=target_modules,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
+        
     else:
-        pass
+        print("Full Parameter Fine-Tuning")
 
-    print(result_str)
-    return result_str
+
+    for name, param in model.named_parameters():
+        if any(module in name for module in target_modules):
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
+    for batch in train_data:
+        for k,v in batch.items():
+            batch[k]=v.to("cpu")
+    data_module = dict(train_dataset=train_data, data_collator=custom_collate_fn)
+
+    # Add CustomTrainer class definition
+    from transformers import Trainer
+    import torch.nn.functional as F
+    
+    class CustomTrainer(Trainer):
+        def __init__(self, *args, script_args=None, k=0.3, lambda1=1e-4, lambda2=3e-4, lambda3=1e-4, pre_trained_model=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.k = k
+            self.lambda1 = lambda1
+            self.lambda2 = lambda2
+            self.lambda3 = lambda3
+            self.use_improved_lora = script_args.use_improved_lora if script_args else False
+            self.pre_trained_model = pre_trained_model
+            
+        def compute_loss(self, model, inputs, return_outputs=False):
+            labels = inputs["input_ids"].clone()
+            labels[:, :-1] = inputs["input_ids"][:, 1:]
+            labels[:, -1] = -100
+            outputs = model(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], labels=labels)
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+            
+            # Consistency Regularization
+            if hasattr(self, 'use_improved_lora') and self.use_improved_lora and 'dense_logits' in inputs:
+                # Convert dense_logits to float type
+                dense_logits = inputs["dense_logits"].to(torch.float32)
+                pre_trained_probs = F.softmax(dense_logits, dim=-1)
+                fine_tuned_probs = F.softmax(outputs.logits, dim=-1)
+                
+                consistency_loss = F.kl_div(fine_tuned_probs.log(), pre_trained_probs, reduction='batchmean')
+            else:
+                consistency_loss = 0
+                
+            # Overall Loss
+            total_loss = loss + self.lambda1 * consistency_loss
+            
+            return (total_loss, outputs) if return_outputs else total_loss
+            
+    class WandbCustomTrainer(CustomTrainer):
+        def compute_loss(self, model, inputs, return_outputs=False):
+            labels = inputs["input_ids"].clone()
+            labels[:, :-1] = inputs["input_ids"][:, 1:]
+            labels[:, -1] = -100
+            total_loss, outputs = super().compute_loss(model, inputs, return_outputs=True)
+            
+            # 记录各种损失组件
+            if self.use_improved_lora:
+                wandb.log({
+                    "total_loss": total_loss.item(),
+                    "lm_loss": outputs["loss"].item() if isinstance(outputs, dict) else outputs[0].item(),
+                    "consistency_loss": self.lambda1 * outputs.get("consistency_loss", 0),
+                    # "diversity_loss": self.lambda2 * outputs.get("diversity_loss", 0),
+                    # "svd_loss": self.lambda3 * outputs.get("svd_loss", 0),
+                }, step=self.state.global_step)
+            else:
+                wandb.log({
+                    "total_loss": total_loss.item(),
+                    "lm_loss": outputs["loss"].item() if isinstance(outputs, dict) else outputs[0].item(),
+                }, step=self.state.global_step)
+
+            return (total_loss, outputs) if return_outputs else total_loss
+
+        def training_step(self, model, inputs):
+            # 确保训练时cache关闭
+            model.config.use_cache = False
+            loss = super().training_step(model, inputs)
+            
+            # 记录学习率
+            if self.lr_scheduler is not None:
+                wandb.log({
+                    "learning_rate": self.lr_scheduler.get_last_lr()[0]
+                }, step=self.state.global_step)
+                
+            return loss
+
+    trainer = WandbCustomTrainer(
+        model=model,
+        script_args=script_args,
+        tokenizer=tokenizer,
+        args=script_args,
+        **data_module
+    )
+    model.config.use_cache = True
+
+    trainer.train()
+
+    wandb.finish()
+    return model, tokenizer

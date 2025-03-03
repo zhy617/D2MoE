@@ -1,0 +1,8 @@
+Experiment: D2-Mixtral-finetune
+PPL after evaluation: {'wikitext2': 26.389604568481445}
+Average Allocated Memory: 8360.25 MiB
+Average Reserved Memory: 18073.09 MiB
+Total number of parameters: 0.40B
+Number of non-zero parameters: 0.40B
+Compression ratio: 0.99%
+Save ratio: 0.01%
