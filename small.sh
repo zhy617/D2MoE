@@ -25,7 +25,6 @@
 #     --seed=42 \
 #     --max_samples=256 \
 
-export WANDB_API_KEY="7e8a392119c0088e7ef937fb199e723cde5cb16b"
 # run the D2-MoE, the evaluation results will be saved in the result_path
 python D2-mixtral_finetune.py \
     --control_name=wikitext-2v1_llama-2-7b_clm_20_1024_0.1_ppwandasp_probe-default_sync_c4-2000_0.5+0.05-0.5+0.05-0.5+0.05-0.5+0.05-0.5+0.05-seqrank+bszrank_default \
