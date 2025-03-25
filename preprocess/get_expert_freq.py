@@ -41,7 +41,7 @@ def get_expert_frequency(model, tokenizer, args, model_type, dataset_name, split
         expert_selection_counts = {i: torch.zeros(model.model.config.num_local_experts, device=device) for i in selected_layers}
     elif model_type == "deepseek":
         expert_selection_counts = {i: torch.zeros(model.model.config.n_routed_experts, device=device) for i in selected_layers}
-    elif model_type == "phi":
+    elif model_type == "phi": 
         expert_selection_counts = {i: torch.zeros(model.model.config.num_local_experts, device=device) for i in selected_layers}
     elif model_type == "qwen":
         expert_selection_counts = {i: torch.zeros(model.model.config.num_experts, device=device) for i in selected_layers}
@@ -135,10 +135,17 @@ def get_expert_frequency(model, tokenizer, args, model_type, dataset_name, split
             moe_module = layer.block_sparse_moe
             handle = moe_module.register_forward_hook(create_hook(layer_idx))
             handles.append(handle)
-        # elif hasattr(layer, 'gate'):
-        #     gate_module = layer.gate
-        #     handle = gate_module.register_forward_hook(create_hook(layer_idx))
-        #     handles.append(handle)
+        elif hasattr(layer, 'mlp') and model_type == "deepseek":
+            moe_module = layer.mlp
+            if hasattr(moe_module, 'gate'):
+                gate_module = moe_module.gate
+                handle = gate_module.register_forward_hook(create_hook(layer_idx))
+                handles.append(handle)
+        elif hasattr(layer, 'mlp') and model_type == "qwen":
+            moe_module = layer.mlp
+            handle = moe_module.register_forward_hook(create_hook(layer_idx))
+            handles.append(handle)
+
 
     # Iterate through the dataloader and perform forward passes to collect counts
     for batch in tqdm(dataloader, desc="Collecting expert activation counts"):
