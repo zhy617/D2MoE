@@ -15,7 +15,7 @@ python preprocess/get_fisher.py \
     --num_samples=32 \
 	--scale_type fisher \
 
-get the SVD scale of model in advance
+# get the SVD scale of model in advance
 python preprocess/get_scale.py \
     --base_model_path=/root/fshare/models/Qwen/Qwen3-30B-A3B \
     --save_path=/root/D2MoE/results/Qwen \
@@ -23,7 +23,7 @@ python preprocess/get_scale.py \
     --dataset_name=wikitext \
     --split=train \
     --seed=42 \
-    --max_samples=32 \
+    --max_samples=1 \
 
 # run the D2-MoE, the evaluation results will be saved in the result_path
 # python D2-mixtral.py \

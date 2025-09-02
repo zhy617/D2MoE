@@ -15,7 +15,7 @@ python preprocess/get_fisher.py \
     --num_samples=32 \
 	--scale_type fisher \
 
-get the SVD scale of model in advance
+# get the SVD scale of model in advance
 python preprocess/get_scale.py \
     --base_model_path=/root/fshare/models/deepseek-ai/deepseek-moe-16b-base \
     --save_path=/root/D2MoE/results/deepseek \
