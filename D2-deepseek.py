@@ -29,6 +29,8 @@ parser.add_argument("--share_ratio", type=float, default=1)
 parser.add_argument("--share_V", action='store_true', default=False)
 parser.add_argument("--share_U", action='store_true', default=False)
 parser.add_argument("--merge_method", type=str, default="fisher")
+# 在这里添加新的参数
+# parser.add_argument('--probe_ratio_my_set', type=float, default=0.1, help='The probe ratio for pruning metric calculation.')
 
 
 for k in cfg:

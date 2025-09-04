@@ -25,6 +25,12 @@
 #     --seed=42 \
 #     --max_samples=256 \
 
+# python cal_params.py \
+#     --model_type deepseek \
+# 	--model_path /home/tom/fsas/models/deepseek-ai/deepseek-moe-16b-base \
+# 	--target_compression_ratio 0.6 \
+# 	--pp_ratio 0.2
+
 # run the D2-MoE, the evaluation results will be saved in the result_path
 python D2-deepseek.py \
     --control_name=wikitext-2v1_llama-2-7b_clm_20_1024_0.1_ppwandasp_probe-default_sync_c4-2000_0.5+0.05-0.5+0.05-0.5+0.05-0.5+0.05-0.5+0.05-seqrank+bszrank_default \
