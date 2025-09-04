@@ -264,7 +264,7 @@ class HiddenRepresentationPruning():
                     probe_ratio = norm_probe_out_square / (denominator + 1e-6)
                     # if cfg['static_probe'] == True:
                     #     probe_ratio = 1
-                    probe_ratio = cfg['probe_ratio_my_set']
+                    # probe_ratio = cfg['probe_ratio_my_set']
                     global_ratio = 1 - probe_ratio
 
                     combined_probe_out = global_ratio * cur_global_metric_score_distribution + probe_ratio * norm_probe_out_square
