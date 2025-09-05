@@ -1,12 +1,12 @@
 # # get expert frequencies in advance, save a json file
-python preprocess/get_expert_freq.py \
-    --base_model_path=/home/tom/fsas/models/Qwen/Qwen2-57B-A14B \
-    --save_path=/home/tom/fsas/zhanghongyu/results/qwen \
-    --model_type=qwen \
-    --dataset_name=wikitext \
-    --split=train \
-    --seed=42 \
-    --max_samples=20000 \
+# python preprocess/get_expert_freq.py \
+#     --base_model_path=/home/tom/fsas/models/Qwen/Qwen2-57B-A14B \
+#     --save_path=/home/tom/fsas/zhanghongyu/results/qwen \
+#     --model_type=qwen \
+#     --dataset_name=wikitext \
+#     --split=train \
+#     --seed=42 \
+#     --max_samples=20000 \
 
 # # get fisher information of model in advance
 python preprocess/get_fisher.py \

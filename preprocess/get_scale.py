@@ -65,7 +65,10 @@ def process_scaling_matrix(raw_matrix, name, module_device):
         matrix = eigenvectors @ torch.diag(eigenvalues) @ eigenvectors.T
 
     # 进行 Cholesky 分解
-    cholesky_matrix = torch.linalg.cholesky(matrix)
+    # cholesky_matrix = torch.linalg.cholesky(matrix)
+    # 添加一个非常小的正数到对角线，保证矩阵是正定的
+    eps = 1e-6 
+    cholesky_matrix = torch.linalg.cholesky(matrix + eps * torch.eye(matrix.shape[0], device=matrix.device))
     return cholesky_matrix
 
 
