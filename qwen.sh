@@ -9,11 +9,11 @@
 #     --max_samples=20000 \
 
 # # get fisher information of model in advance
-python preprocess/get_fisher.py \
-    --base_model_path=/home/tom/fsas/models/Qwen/Qwen2-57B-A14B \
-    --save_path=/home/tom/fsas/zhanghongyu/results/qwen \
-    --num_samples=1024 \
-	--scale_type fisher \
+# python preprocess/get_fisher.py \
+#     --base_model_path=/home/tom/fsas/models/Qwen/Qwen2-57B-A14B \
+#     --save_path=/home/tom/fsas/zhanghongyu/results/qwen \
+#     --num_samples=1024 \
+# 	--scale_type fisher \
 
 # # get the SVD scale of model in advance
 python preprocess/get_scale.py \

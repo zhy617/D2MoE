@@ -145,12 +145,105 @@ def runExperiment():
     save_dir = f"{args['result_path']}/qwen_delta-{args['delta_ratio']}-pp_ratio-{args['pp_ratio']}-shareV-{args['share_V']}"
     os.makedirs(save_dir, exist_ok=True)
 
-    result_str = ppl_eval_sharing(model, tokenizer, experiment_name=f"D2-qwen", datasets=['wikitext2', 'ptb', 'c4'], params_only=False, batch_size=8)
-    with open(f"{save_dir}/ppl_eval_sharing.txt", "w") as f:
-        f.write(result_str)
+    # result_str = ppl_eval_sharing(model, tokenizer, experiment_name=f"D2-qwen", datasets=['wikitext2', 'ptb', 'c4'], params_only=False, batch_size=8)
+    # with open(f"{save_dir}/ppl_eval_sharing.txt", "w") as f:
+    #     f.write(result_str)
 
-    run_lm_eval(model, tokenizer, batch_size=8, task_names=["openbookqa", "arc_easy", "winogrande", "hellaswag",
-            "arc_challenge", "piqa", "mathqa"], output_dir=save_dir)
+    # run_lm_eval(model, tokenizer, batch_size=8, task_names=["openbookqa", "arc_easy", "winogrande", "hellaswag",
+    #         "arc_challenge", "piqa", "mathqa"], output_dir=save_dir)
+    
+    # ===================================================================
+    #                  ✅ 开始：标准延迟测试代码块 ✅
+    # ===================================================================
+    import time
+    import numpy as np
+    import json
+
+    print("\n" + "="*50)
+    print(" " * 15 + "Running Latency Test")
+    print("="*50)
+
+    # --- 1. 参数设置 (与之前保持一致) ---
+    prompt = "DeepSeek is a large language model developed by"
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device) 
+    n_warmup = 5
+    n_runs = 20
+    max_new_tokens = 100
+    latencies = []
+
+    # --- 2. 预热 (Warm-up) ---
+    print(f"Running {n_warmup} warm-up rounds...")
+    for _ in range(n_warmup):
+        _ = model.generate(
+            **inputs, 
+            max_new_tokens=max_new_tokens, 
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
+    torch.cuda.synchronize()
+
+    # --- 3. 正式测试 ---
+    print(f"Running {n_runs} test rounds...")
+    for _ in tqdm(range(n_runs), desc="Measuring Latency"):
+        torch.cuda.synchronize()
+        start_time = time.perf_counter()
+        
+        _ = model.generate(
+            **inputs, 
+            max_new_tokens=max_new_tokens, 
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
+        
+        torch.cuda.synchronize()
+        end_time = time.perf_counter()
+        latencies.append(end_time - start_time)
+
+    # --- 4. 计算、打印并保存结果 ---
+    avg_latency_per_run = np.mean(latencies)
+    avg_latency_per_token = (avg_latency_per_run / max_new_tokens) * 1000
+    tokens_per_second = 1 / (avg_latency_per_run / max_new_tokens)
+
+    print("\n" + "="*50)
+    print(" " * 17 + "Latency Test Results")
+    print("="*50)
+    print(f"Model: {args['base_model_path']}")
+    print(f"Test runs: {n_runs}")
+    print(f"Generated tokens per run: {max_new_tokens}\n")
+    print(f"➡️ Average latency per run: {avg_latency_per_run:.4f} seconds")
+    print(f"➡️ Average latency per token: {avg_latency_per_token:.2f} ms/token")
+    print(f"➡️ Throughput: {tokens_per_second:.2f} tokens/second")
+    print("="*50 + "\n")
+
+    latency_results = {
+        "experiment_parameters": {
+            "base_model": args['base_model_path'],
+            "merge_method": args['merge_method'],
+            "pp_ratio": args['pp_ratio'],
+            "delta_ratio": args['delta_ratio'],
+            "share_V": args['share_V']
+        },
+        "latency_test_config": {
+            "prompt": prompt,
+            "warmup_runs": n_warmup,
+            "test_runs": n_runs,
+            "max_new_tokens": max_new_tokens
+        },
+        "results": {
+            "avg_latency_per_run_s": round(avg_latency_per_run, 4),
+            "avg_latency_per_token_ms": round(avg_latency_per_token, 2),
+            "throughput_tokens_per_sec": round(tokens_per_second, 2)
+        }
+    }
+    
+    latency_json_path = os.path.join(save_dir, "latency_results.json")
+    with open(latency_json_path, "w") as f:
+        json.dump(latency_results, f, indent=4)
+    print(f"Latency results saved to: {latency_json_path}")
+    # ===================================================================
+    #                   ✅ 结束：标准延迟测试代码块 ✅
+    # ===================================================================
+    
     return
 
 
