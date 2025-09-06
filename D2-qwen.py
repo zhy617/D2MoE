@@ -123,9 +123,21 @@ def runExperiment():
     
     model = make_prune_model(model)
     
+    # if cfg['merge_model']:
+    #     for i in range(len(model.model.model.layers)):
+    #         model.model.model.layers[i].mlp.update_Wmean()
+
+    # 修改后 (添加了安全检查)
     if cfg['merge_model']:
+        print("Updating Wmean for merged layers...")
         for i in range(len(model.model.model.layers)):
-            model.model.model.layers[i].mlp.update_Wmean()
+            # 检查当前层的 mlp 模块是否拥有 update_Wmean 这个方法
+            if hasattr(model.model.model.layers[i].mlp, 'update_Wmean'):
+                # 如果有，才调用它
+                model.model.model.layers[i].mlp.update_Wmean()
+            else:
+                # 如果没有，说明是原始模块，打印信息并跳过
+                print(f"Skipping update_Wmean for layer {i} (original MoE block).")
 
     if 'calib' in cfg['prune_method']:
         print('Running Calibration ...', flush=True)
