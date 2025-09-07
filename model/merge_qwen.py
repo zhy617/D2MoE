@@ -304,13 +304,50 @@ class Merge_QwenMoE(nn.Module):
             svd_v = torch.matmul(sqrtSigma, truc_v)
         else:
             if scale_type == 'svdllm':
-                W_scale = torch.matmul(W, svd_scale.bfloat16().to(W.device))
-                U, S, VT = safe_svd(W_scale.float())
-                del W_scale
+                # W_scale = torch.matmul(W, svd_scale.bfloat16().to(W.device))
+                # U, S, VT = safe_svd(W_scale.float())
+                # del W_scale
+                # truc_s = S[:num_s_after_trunc]
+                # del S
+                # truc_u = U[:, :num_s_after_trunc]
+                # del U
+                # truc_v = torch.matmul(VT[:num_s_after_trunc, :], cal_scale_inv(svd_scale).to(W.device))
+                # del VT
+                # truc_sigma = torch.diag(truc_s)
+                # del truc_s
+                # if absorb_u:
+                #     svd_u = torch.matmul(truc_u, truc_sigma)
+                #     svd_v = truc_v
+                # elif absorb_v:
+                #     svd_u = truc_u
+                #     svd_v = torch.matmul(truc_sigma, truc_v)
+                # else:
+                #     sqrtSigma = torch.sqrt(truc_sigma)
+                #     svd_u = torch.matmul(truc_u, sqrtSigma)
+                #     svd_v = torch.matmul(sqrtSigma, truc_v)
+
+                # =============================================================================
+                # 开始修改：引入高精度计算以避免 NaN 问题
+                # =============================================================================
+
+                # 1. 将输入矩阵临时转换为 float32 以保证计算稳定
+                W_float32 = W.to(torch.float32)
+                svd_scale_float32 = svd_scale.to(W.device, dtype=torch.float32)
+                
+                # 2. 在高精度下执行矩阵乘法，避免产生 NaN
+                W_scale = torch.matmul(W_float32, svd_scale_float32)
+                
+                # 3. W_scale 已经是 float32，可以直接送入 SVD 函数
+                U, S, VT = safe_svd(W_scale) # 假设 safe_svd 会处理 float32
+                
+                # 明确删除不再需要的 float32 临时变量
+                del W_float32, svd_scale_float32, W_scale
+                
                 truc_s = S[:num_s_after_trunc]
                 del S
                 truc_u = U[:, :num_s_after_trunc]
                 del U
+                # 假设 cal_scale_inv 存在
                 truc_v = torch.matmul(VT[:num_s_after_trunc, :], cal_scale_inv(svd_scale).to(W.device))
                 del VT
                 truc_sigma = torch.diag(truc_s)
@@ -322,9 +359,14 @@ class Merge_QwenMoE(nn.Module):
                     svd_u = truc_u
                     svd_v = torch.matmul(truc_sigma, truc_v)
                 else:
-                    sqrtSigma = torch.sqrt(truc_sigma)
+                    # 在开平方根前确保数值非负，增加代码健壮性
+                    sqrtSigma = torch.sqrt(torch.clamp(truc_sigma, min=0.0))
                     svd_u = torch.matmul(truc_u, sqrtSigma)
                     svd_v = torch.matmul(sqrtSigma, truc_v)
+                # =============================================================================
+                # 结束修改
+                # =============================================================================
+                
             elif scale_type == 'asvd':
                 alpha = 0.5
                 svd_scale *= alpha
