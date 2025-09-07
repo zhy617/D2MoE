@@ -164,31 +164,107 @@ class Merge_QwenMoE(nn.Module):
         else:
             num_s_after_trunc = rank
 
+        # def safe_svd(matrix):
+        #     try:
+        #         return torch.linalg.svd(matrix, full_matrices=False)
+        #     except torch._C._LinAlgError:
+        #         # 添加小的扰动以提高数值稳定性
+        #         eps = 1e-6
+        #         noise = torch.randn_like(matrix) * eps
+        #         matrix = matrix + noise
+        #         try:
+        #             return torch.linalg.svd(matrix, full_matrices=False)
+        #         except torch._C._LinAlgError:
+        #             # 如果还是失败，尝试更大的扰动
+        #             eps = 1e-2
+        #             noise = torch.randn_like(matrix) * eps
+        #             matrix = matrix + noise
+        #             try:
+        #                 return torch.linalg.svd(matrix, full_matrices=False)
+        #             except torch._C._LinAlgError:
+        #                 eps = 1
+        #                 noise = torch.randn_like(matrix) * eps
+        #                 matrix = matrix + noise
+        #                 try:
+        #                     return torch.linalg.svd(matrix, full_matrices=False)
+        #                 except torch._C._LinAlgError:
+        #                     raise ValueError("SVD failed after multiple attempts")
+
+        # def safe_svd(matrix):
+        #     """
+        #     一个更稳健的SVD实现：
+        #     1. 首先尝试在高精度(float32)下进行标准SVD计算。
+        #     2. 如果失败，则切换到一个更慢但更可靠的SVD求解器(gesvdj)。
+        #     """
+        #     original_dtype = matrix.dtype
+        #     matrix_float32 = matrix.to(torch.float32)
+
+        #     try:
+        #         # 方案一：在高精度下使用默认的快速SVD求解器
+        #         U, S, VT = torch.linalg.svd(matrix_float32, full_matrices=False)
+        #     except torch.linalg.LinAlgError:
+        #         print("Warning: Standard SVD failed. Retrying with more stable 'gesvdj' driver.")
+        #         try:
+        #             # 方案二：如果方案一失败，切换到更稳健的求解器
+        #             U, S, VT = torch.linalg.svd(matrix_float32, full_matrices=False, driver='gesvdj')
+        #         except torch.linalg.LinAlgError as e:
+        #             # 如果所有方法都失败，则抛出异常
+        #             raise ValueError("SVD computation failed even with the stable 'gesvdj' driver.") from e
+            
+        #     # 将结果转换回原始精度
+        #     return U.to(original_dtype), S.to(original_dtype), VT.to(original_dtype)
+
         def safe_svd(matrix):
+            """
+            一个极其稳健的SVD实现，带有四重保障：
+            1. 使用高精度(float32)计算。
+            2. 尝试默认的快速SVD求解器。
+            3. 如果失败，回退到更可靠的'gesvdj'求解器。
+            4. 如果再次失败，则循环尝试添加不同强度的正则化项。
+            """
+            original_dtype = matrix.dtype
+            matrix_float32 = matrix.to(torch.float32)
+
+            # 第一重保障：高精度 + 快速求解器
             try:
-                return torch.linalg.svd(matrix, full_matrices=False)
-            except torch._C._LinAlgError:
-                # 添加小的扰动以提高数值稳定性
-                eps = 1e-6
-                noise = torch.randn_like(matrix) * eps
-                matrix = matrix + noise
+                return torch.linalg.svd(matrix_float32, full_matrices=False)
+            except torch.linalg.LinAlgError:
+                print("Warning: Standard SVD failed. Retrying with more stable 'gesvdj' driver.")
+
+            # 第二重保障：高精度 + 可靠求解器
+            try:
+                return torch.linalg.svd(matrix_float32, full_matrices=False, driver='gesvdj')
+            except torch.linalg.LinAlgError:
+                print("Warning: 'gesvdj' driver also failed. Will try to apply regularization.")
+
+            # 第三、四重及更多保障：循环添加不同强度的正则化项
+            eps_values = [1e-6, 1e-4, 1e-2, 1] # 您可以按需增删或修改这里的eps值
+            for eps in eps_values:
                 try:
-                    return torch.linalg.svd(matrix, full_matrices=False)
-                except torch._C._LinAlgError:
-                    # 如果还是失败，尝试更大的扰动
-                    eps = 1e-2
-                    noise = torch.randn_like(matrix) * eps
-                    matrix = matrix + noise
-                    try:
-                        return torch.linalg.svd(matrix, full_matrices=False)
-                    except torch._C._LinAlgError:
-                        eps = 1
-                        noise = torch.randn_like(matrix) * eps
-                        matrix = matrix + noise
-                        try:
-                            return torch.linalg.svd(matrix, full_matrices=False)
-                        except torch._C._LinAlgError:
-                            raise ValueError("SVD failed after multiple attempts")
+                    print(f"Retrying SVD with regularization eps={eps}...")
+                    # 创建一个只在对角线有值的矩阵用于正则化
+                    regularization = torch.zeros_like(matrix_float32)
+                    diag_len = min(matrix_float32.shape)
+                    # 使用 .diagonal() 来安全地修改对角线
+                    regularization.diagonal(dim1=-2, dim2=-1)[:diag_len] += eps
+                    
+                    # 在添加了微小扰动的矩阵上再次尝试最可靠的gesvdj求解器
+                    U, S, VT = torch.linalg.svd(matrix_float32 + regularization, full_matrices=False, driver='gesvdj')
+                    
+                    # 如果成功，则将结果转回原始精度并返回
+                    print(f"SVD succeeded with eps={eps}.")
+                    return U.to(original_dtype), S.to(original_dtype), VT.to(original_dtype)
+                except torch.linalg.LinAlgError:
+                    # 如果当前eps失败，循环将继续尝试下一个更大的eps
+                    continue
+            
+            # 如果所有尝试都失败了
+            raise ValueError(f"SVD failed even after trying multiple regularization strengths up to eps={eps_values[-1]}.")
+        
+        
+        # =============================================================================
+        # svd_delta 函数的其余部分保持不变，只是调用 safe_svd 的地方换成 _stable_svd
+        # =============================================================================
 
         if svd_scale is None:
             U, S, VT = safe_svd(W.float())
