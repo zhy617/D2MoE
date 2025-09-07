@@ -86,6 +86,42 @@ def runExperiment():
                                                     trust_remote_code=True, 
                                                     torch_dtype=torch.float32)
 
+        print("Baseline model loaded.")
+
+        # ==================== ⬇️ 新增的即时扫描代码 ⬇️ ====================
+        def verify_loaded_model(model_to_check):
+            print("\n" + "="*60)
+            print("🔬 Performing immediate scan of the loaded model in memory...")
+            print("="*60)
+            
+            found_issue = False
+            corrupted_tensors = []
+            
+            pbar = tqdm(model_to_check.named_parameters(), desc="Scanning loaded parameters")
+            for name, param in pbar:
+                if not torch.all(torch.isfinite(param)):
+                    nan_count = torch.isnan(param).sum().item()
+                    inf_count = torch.isinf(param).sum().item()
+                    issue_str = f"Tensor: {name}, NaNs: {nan_count}, Infs: {inf_count}"
+                    corrupted_tensors.append(issue_str)
+                    found_issue = True
+
+            if not found_issue:
+                print("\n✅ VERDICT: Model in memory is CLEAN. No NaN/Inf values found immediately after loading.")
+            else:
+                print(f"\n❌ VERDICT: CORRUPTION DETECTED immediately after loading!")
+                print("The following tensors were found to be corrupted:")
+                for issue in corrupted_tensors:
+                    print(f"  - {issue}")
+                # 如果检测到损坏，可以选择直接抛出异常停止程序
+                # raise RuntimeError("Model is corrupted upon loading, stopping execution.")
+                
+            print("="*60 + "\n")
+
+        # 执行扫描
+        verify_loaded_model(model)
+        # ==================== ⬆️ 扫描代码结束 ⬆️ ====================
+
 
         # for i in tqdm(range(len(model.model.layers)), desc="Merging layers"):
 
