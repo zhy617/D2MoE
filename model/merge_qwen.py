@@ -425,8 +425,8 @@ class Merge_QwenMoE(nn.Module):
             """
             在 merge_experts 开始时，立即扫描传入的 module 对象中所有专家的权重。
             """
-            print("\n" + "-"*60)
-            print("🔬 Performing scan on the module passed to merge_experts...")
+            tqdm.write("\n" + "-"*60)
+            tqdm.write("🔬 Performing scan on the module passed to merge_experts...")
             
             found_issue = False
             corrupted_tensors = []
@@ -451,16 +451,16 @@ class Merge_QwenMoE(nn.Module):
                             found_issue = True
 
             if not found_issue:
-                print("✅ VERDICT: Incoming module weights are CLEAN.")
+                tqdm.write("✅ VERDICT: Incoming module weights are CLEAN.")
             else:
-                print("❌ VERDICT: CORRUPTION DETECTED in the incoming module weights!")
-                print("The following tensors were found to be corrupted upon entry to merge_experts:")
+                tqdm.write("❌ VERDICT: CORRUPTION DETECTED in the incoming module weights!")
+                tqdm.write("The following tensors were found to be corrupted upon entry to merge_experts:")
                 for issue in corrupted_tensors:
-                    print(f"  - {issue}")
-            print("-" * 60 + "\n")
+                    tqdm.write(f"  - {issue}")
+            tqdm.write("-" * 60 + "\n")
 
         # 在函数开始时立即执行扫描
-        scan_incoming_module(module)
+        # scan_incoming_module(module)
         # ==================== ⬆️ 扫描代码结束 ⬆️ ====================
 
         self.gate.weight.data = module.gate.weight.data
