@@ -1,2 +1,2 @@
-python verify-model.py \
+python verify-model-shards.py \
     --model_path /home/tom/fsas/models/Qwen/Qwen2-57B-A14B
