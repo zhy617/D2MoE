@@ -87,7 +87,17 @@ def runExperiment():
                                                     torch_dtype=torch.bfloat16)
 
 
-        for i in tqdm(range(len(model.model.layers)), desc="Merging layers"):
+        # for i in tqdm(range(len(model.model.layers)), desc="Merging layers"):
+
+        # ==================== ⬇️ 开始修改 ⬇️ ====================
+    
+        # 1. 定义一个只包含你想要处理的层的列表
+        layers_to_process = [12, 13, 14, 16]
+        print(f"Targeting specific layers for merging: {layers_to_process}")
+
+        # 2. 修改 for 循环，让它只遍历上面这个列表中的层号
+        for i in tqdm(layers_to_process, desc="Merging specific layers"):
+        # ==================== ⬆️ 修改结束 ⬆️ ====================
             try:
                 Merge_MoE_Block = Merge_QwenMoE(model.config, share_ratio=share_ratio, 
                                                         delta_ratio=delta_ratio, expert_freq=expert_freq[str(i)], 
