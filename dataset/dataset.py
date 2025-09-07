@@ -297,7 +297,7 @@ def process_calibration_dataset(dataset, tokenizer, dataset_name, device='cuda')
         elif 'wiki' in dataset_name:
             max_length = cfg[cfg['model_name']]['max_length']
             # max_length = 2048
-            max_length = 1024
+            max_length = 256
             def preprocess_function_test(examples):   
                 nonlocal processed_calibrate_sample_num
                 all_text = "\n\n".join(examples['text'])

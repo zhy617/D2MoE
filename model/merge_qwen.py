@@ -223,7 +223,29 @@ class Merge_QwenMoE(nn.Module):
             4. 如果再次失败，则循环尝试添加不同强度的正则化项。
             """
             original_dtype = matrix.dtype
+
+            # ==================== ⬇️ 添加诊断代码 ⬇️ ====================
+            # 检查矩阵中是否存在无效值 (NaN 或 Inf)
+            if not torch.all(torch.isfinite(matrix)):
+                nan_count = torch.isnan(matrix).sum().item()
+                inf_count = torch.isinf(matrix).sum().item()
+                print(f"!!! CRITICAL: Matrix contains invalid values! NaNs: {nan_count}, Infs: {inf_count}. Skipping SVD.")
+                # 如果有无效值，直接抛出异常，不再尝试SVD
+                raise ValueError("Matrix contains NaN/Inf values, cannot perform SVD.")
+            
+            # 打印矩阵的数值范围，帮助判断是否病态
+            min_val = torch.min(matrix).item()
+            max_val = torch.max(matrix).item()
+            mean_val = torch.mean(matrix).item()
+            print(f"Matrix stats: min={min_val:.4f}, max={max_val:.4f}, mean={mean_val:.4f}")
+            # ==================== ⬆️ 诊断代码结束 ⬆️ ====================
+
+            if not torch.all(torch.isfinite(matrix)):
+                print("Warning: Replacing NaN/Inf values in the matrix with 0.")
+                matrix = torch.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
             matrix_float32 = matrix.to(torch.float32)
+
 
             # 第一重保障：高精度 + 快速求解器
             try:
