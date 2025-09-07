@@ -330,15 +330,33 @@ class Merge_QwenMoE(nn.Module):
                 # 开始修改：引入高精度计算以避免 NaN 问题
                 # =============================================================================
 
-                # 1. 将输入矩阵临时转换为 float32 以保证计算稳定
+                # --- 诊断点 1: 检查输入的 W 矩阵 ---
+                if torch.isnan(W).any():
+                    tqdm.write(f"!!! NaN DETECTED IN INPUT 'W' BEFORE MATMUL !!! Shape: {W.shape}")
+                else:
+                    tqdm.write(f"-> Input 'W' is clean (no NaNs). Shape: {W.shape}")
+
+                # --- 诊断点 2: 检查输入的 svd_scale 矩阵 ---
+                if torch.isnan(svd_scale).any():
+                    tqdm.write(f"!!! NaN DETECTED IN INPUT 'svd_scale' BEFORE MATMUL !!! Shape: {svd_scale.shape}")
+                else:
+                    tqdm.write(f"-> Input 'svd_scale' is clean (no NaNs). Shape: {svd_scale.shape}")
+
+                # 执行我们之前讨论过的高精度乘法
                 W_float32 = W.to(torch.float32)
                 svd_scale_float32 = svd_scale.to(W.device, dtype=torch.float32)
-                
-                # 2. 在高精度下执行矩阵乘法，避免产生 NaN
                 W_scale = torch.matmul(W_float32, svd_scale_float32)
-                
-                # 3. W_scale 已经是 float32，可以直接送入 SVD 函数
-                U, S, VT = safe_svd(W_scale) # 假设 safe_svd 会处理 float32
+                tqdm.write(f"-> Matmul operation complete. Resulting shape: {W_scale.shape}")
+
+                # --- 诊断点 3: 检查矩阵乘法的结果 W_scale ---
+                if torch.isnan(W_scale).any():
+                    nan_count = torch.isnan(W_scale).sum().item()
+                    tqdm.write(f"!!! NaN DETECTED IN 'W_scale' AFTER MATMUL !!! Count: {nan_count}. THIS IS THE PROBLEM SOURCE.")
+                else:
+                    tqdm.write(f"-> Result 'W_scale' is clean (no NaNs).")
+                    
+                # 将 W_scale (已经是 float32) 送入 SVD 函数
+                U, S, VT = safe_svd(W_scale)
                 
                 # 明确删除不再需要的 float32 临时变量
                 del W_float32, svd_scale_float32, W_scale

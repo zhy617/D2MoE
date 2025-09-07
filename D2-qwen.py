@@ -84,7 +84,7 @@ def runExperiment():
         model = AutoModelForCausalLM.from_pretrained(base_model_path, 
                                                     device_map="auto", 
                                                     trust_remote_code=True, 
-                                                    torch_dtype=torch.bfloat16)
+                                                    torch_dtype=torch.float32)
 
 
         # for i in tqdm(range(len(model.model.layers)), desc="Merging layers"):
