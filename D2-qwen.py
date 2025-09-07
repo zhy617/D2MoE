@@ -218,6 +218,9 @@ def runExperiment():
     import numpy as np
     import json
 
+    cfg['test_stage'] = True  # 确保模型处于测试模式
+    model.eval()  # 设置模型为评估模式
+
     print("\n" + "="*50)
     print(" " * 15 + "Running Latency Test")
     print("="*50)

@@ -164,31 +164,31 @@ class Merge_QwenMoE(nn.Module):
         else:
             num_s_after_trunc = rank
 
-        # def safe_svd(matrix):
-        #     try:
-        #         return torch.linalg.svd(matrix, full_matrices=False)
-        #     except torch._C._LinAlgError:
-        #         # 添加小的扰动以提高数值稳定性
-        #         eps = 1e-6
-        #         noise = torch.randn_like(matrix) * eps
-        #         matrix = matrix + noise
-        #         try:
-        #             return torch.linalg.svd(matrix, full_matrices=False)
-        #         except torch._C._LinAlgError:
-        #             # 如果还是失败，尝试更大的扰动
-        #             eps = 1e-2
-        #             noise = torch.randn_like(matrix) * eps
-        #             matrix = matrix + noise
-        #             try:
-        #                 return torch.linalg.svd(matrix, full_matrices=False)
-        #             except torch._C._LinAlgError:
-        #                 eps = 1
-        #                 noise = torch.randn_like(matrix) * eps
-        #                 matrix = matrix + noise
-        #                 try:
-        #                     return torch.linalg.svd(matrix, full_matrices=False)
-        #                 except torch._C._LinAlgError:
-        #                     raise ValueError("SVD failed after multiple attempts")
+        def safe_svd(matrix):
+            try:
+                return torch.linalg.svd(matrix, full_matrices=False)
+            except torch._C._LinAlgError:
+                # 添加小的扰动以提高数值稳定性
+                eps = 1e-6
+                noise = torch.randn_like(matrix) * eps
+                matrix = matrix + noise
+                try:
+                    return torch.linalg.svd(matrix, full_matrices=False)
+                except torch._C._LinAlgError:
+                    # 如果还是失败，尝试更大的扰动
+                    eps = 1e-2
+                    noise = torch.randn_like(matrix) * eps
+                    matrix = matrix + noise
+                    try:
+                        return torch.linalg.svd(matrix, full_matrices=False)
+                    except torch._C._LinAlgError:
+                        eps = 1
+                        noise = torch.randn_like(matrix) * eps
+                        matrix = matrix + noise
+                        try:
+                            return torch.linalg.svd(matrix, full_matrices=False)
+                        except torch._C._LinAlgError:
+                            raise ValueError("SVD failed after multiple attempts")
 
         # def safe_svd(matrix):
         #     """
@@ -214,79 +214,79 @@ class Merge_QwenMoE(nn.Module):
         #     # 将结果转换回原始精度
         #     return U.to(original_dtype), S.to(original_dtype), VT.to(original_dtype)
 
-        def safe_svd(matrix):
-            """
-            一个极其稳健的SVD实现，带有四重保障：
-            1. 使用高精度(float32)计算。
-            2. 尝试默认的快速SVD求解器。
-            3. 如果失败，回退到更可靠的'gesvdj'求解器。
-            4. 如果再次失败，则循环尝试添加不同强度的正则化项。
-            """
-            original_dtype = matrix.dtype
+        # def safe_svd(matrix):
+        #     """
+        #     一个极其稳健的SVD实现，带有四重保障：
+        #     1. 使用高精度(float32)计算。
+        #     2. 尝试默认的快速SVD求解器。
+        #     3. 如果失败，回退到更可靠的'gesvdj'求解器。
+        #     4. 如果再次失败，则循环尝试添加不同强度的正则化项。
+        #     """
+        #     original_dtype = matrix.dtype
 
-            # ==================== ⬇️ 添加诊断代码 ⬇️ ====================
-            # 检查矩阵中是否存在无效值 (NaN 或 Inf)
-            if not torch.all(torch.isfinite(matrix)):
-                nan_count = torch.isnan(matrix).sum().item()
-                inf_count = torch.isinf(matrix).sum().item()
-                print(f"!!! CRITICAL: Matrix contains invalid values! NaNs: {nan_count}, Infs: {inf_count}. Skipping SVD.")
-                # 如果有无效值，直接抛出异常，不再尝试SVD
-                raise ValueError("Matrix contains NaN/Inf values, cannot perform SVD.")
+        #     # ==================== ⬇️ 添加诊断代码 ⬇️ ====================
+        #     # 检查矩阵中是否存在无效值 (NaN 或 Inf)
+        #     if not torch.all(torch.isfinite(matrix)):
+        #         nan_count = torch.isnan(matrix).sum().item()
+        #         inf_count = torch.isinf(matrix).sum().item()
+        #         print(f"!!! CRITICAL: Matrix contains invalid values! NaNs: {nan_count}, Infs: {inf_count}. Skipping SVD.")
+        #         # 如果有无效值，直接抛出异常，不再尝试SVD
+        #         raise ValueError("Matrix contains NaN/Inf values, cannot perform SVD.")
             
-            # 打印矩阵的数值范围，帮助判断是否病态
-            min_val = torch.min(matrix).item()
-            max_val = torch.max(matrix).item()
-            mean_val = torch.mean(matrix).item()
-            # print(f"Matrix stats: min={min_val:.4f}, max={max_val:.4f}, mean={mean_val:.4f}")
-            # ==================== ⬆️ 诊断代码结束 ⬆️ ====================
+        #     # 打印矩阵的数值范围，帮助判断是否病态
+        #     min_val = torch.min(matrix).item()
+        #     max_val = torch.max(matrix).item()
+        #     mean_val = torch.mean(matrix).item()
+        #     # print(f"Matrix stats: min={min_val:.4f}, max={max_val:.4f}, mean={mean_val:.4f}")
+        #     # ==================== ⬆️ 诊断代码结束 ⬆️ ====================
 
-            if not torch.all(torch.isfinite(matrix)):
-                print("Warning: Replacing NaN/Inf values in the matrix with 0.")
-                matrix = torch.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+        #     if not torch.all(torch.isfinite(matrix)):
+        #         print("Warning: Replacing NaN/Inf values in the matrix with 0.")
+        #         matrix = torch.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
-            matrix_float32 = matrix.to(torch.float32)
+        #     matrix_float32 = matrix.to(torch.float32)
 
 
-            # 第一重保障：高精度 + 快速求解器
-            try:
-                return torch.linalg.svd(matrix_float32, full_matrices=False)
-            except torch.linalg.LinAlgError:
-                print("Warning: Standard SVD failed. Retrying with more stable 'gesvdj' driver.")
+        #     # 第一重保障：高精度 + 快速求解器
+        #     try:
+        #         return torch.linalg.svd(matrix_float32, full_matrices=False)
+        #     except torch.linalg.LinAlgError:
+        #         print("Warning: Standard SVD failed. Retrying with more stable 'gesvdj' driver.")
 
-            # 第二重保障：高精度 + 可靠求解器
-            try:
-                return torch.linalg.svd(matrix_float32, full_matrices=False, driver='gesvdj')
-            except torch.linalg.LinAlgError:
-                print("Warning: 'gesvdj' driver also failed. Will try to apply regularization.")
+        #     # 第二重保障：高精度 + 可靠求解器
+        #     try:
+        #         return torch.linalg.svd(matrix_float32, full_matrices=False, driver='gesvdj')
+        #     except torch.linalg.LinAlgError:
+        #         print("Warning: 'gesvdj' driver also failed. Will try to apply regularization.")
 
-            # 第三、四重及更多保障：循环添加不同强度的正则化项
-            eps_values = [1e-6, 1e-4, 1e-2, 1] # 您可以按需增删或修改这里的eps值
-            for eps in eps_values:
-                try:
-                    print(f"Retrying SVD with regularization eps={eps}...")
-                    # 创建一个只在对角线有值的矩阵用于正则化
-                    regularization = torch.zeros_like(matrix_float32)
-                    diag_len = min(matrix_float32.shape)
-                    # 使用 .diagonal() 来安全地修改对角线
-                    regularization.diagonal(dim1=-2, dim2=-1)[:diag_len] += eps
+        #     # 第三、四重及更多保障：循环添加不同强度的正则化项
+        #     eps_values = [1e-6, 1e-4, 1e-2, 1] # 您可以按需增删或修改这里的eps值
+        #     for eps in eps_values:
+        #         try:
+        #             print(f"Retrying SVD with regularization eps={eps}...")
+        #             # 创建一个只在对角线有值的矩阵用于正则化
+        #             regularization = torch.zeros_like(matrix_float32)
+        #             diag_len = min(matrix_float32.shape)
+        #             # 使用 .diagonal() 来安全地修改对角线
+        #             regularization.diagonal(dim1=-2, dim2=-1)[:diag_len] += eps
                     
-                    # 在添加了微小扰动的矩阵上再次尝试最可靠的gesvdj求解器
-                    U, S, VT = torch.linalg.svd(matrix_float32 + regularization, full_matrices=False, driver='gesvdj')
+        #             # 在添加了微小扰动的矩阵上再次尝试最可靠的gesvdj求解器
+        #             U, S, VT = torch.linalg.svd(matrix_float32 + regularization, full_matrices=False, driver='gesvdj')
                     
-                    # 如果成功，则将结果转回原始精度并返回
-                    print(f"SVD succeeded with eps={eps}.")
-                    return U.to(original_dtype), S.to(original_dtype), VT.to(original_dtype)
-                except torch.linalg.LinAlgError:
-                    # 如果当前eps失败，循环将继续尝试下一个更大的eps
-                    continue
+        #             # 如果成功，则将结果转回原始精度并返回
+        #             print(f"SVD succeeded with eps={eps}.")
+        #             return U.to(original_dtype), S.to(original_dtype), VT.to(original_dtype)
+        #         except torch.linalg.LinAlgError:
+        #             # 如果当前eps失败，循环将继续尝试下一个更大的eps
+        #             continue
             
-            # 如果所有尝试都失败了
-            raise ValueError(f"SVD failed even after trying multiple regularization strengths up to eps={eps_values[-1]}.")
+        #     # 如果所有尝试都失败了
+        #     raise ValueError(f"SVD failed even after trying multiple regularization strengths up to eps={eps_values[-1]}.")
         
         
-        # =============================================================================
-        # svd_delta 函数的其余部分保持不变，只是调用 safe_svd 的地方换成 _stable_svd
-        # =============================================================================
+        # # =============================================================================
+        # # svd_delta 函数的其余部分保持不变，只是调用 safe_svd 的地方换成 _stable_svd
+        # # =============================================================================
 
         if svd_scale is None:
             U, S, VT = safe_svd(W.float())
@@ -304,73 +304,13 @@ class Merge_QwenMoE(nn.Module):
             svd_v = torch.matmul(sqrtSigma, truc_v)
         else:
             if scale_type == 'svdllm':
-                # W_scale = torch.matmul(W, svd_scale.bfloat16().to(W.device))
-                # U, S, VT = safe_svd(W_scale.float())
-                # del W_scale
-                # truc_s = S[:num_s_after_trunc]
-                # del S
-                # truc_u = U[:, :num_s_after_trunc]
-                # del U
-                # truc_v = torch.matmul(VT[:num_s_after_trunc, :], cal_scale_inv(svd_scale).to(W.device))
-                # del VT
-                # truc_sigma = torch.diag(truc_s)
-                # del truc_s
-                # if absorb_u:
-                #     svd_u = torch.matmul(truc_u, truc_sigma)
-                #     svd_v = truc_v
-                # elif absorb_v:
-                #     svd_u = truc_u
-                #     svd_v = torch.matmul(truc_sigma, truc_v)
-                # else:
-                #     sqrtSigma = torch.sqrt(truc_sigma)
-                #     svd_u = torch.matmul(truc_u, sqrtSigma)
-                #     svd_v = torch.matmul(sqrtSigma, truc_v)
-
-                # =============================================================================
-                # 开始修改：引入高精度计算以避免 NaN 问题
-                # =============================================================================
-
-                # --- 诊断点 1: 检查输入的 W 矩阵 ---
-                if torch.isnan(W).any():
-                    # tqdm.write(f"!!! NaN DETECTED IN INPUT 'W' BEFORE MATMUL !!! Shape: {W.shape}")
-                    pass
-                else:
-                    # tqdm.write(f"-> Input 'W' is clean (no NaNs). Shape: {W.shape}")
-                    pass
-
-                # --- 诊断点 2: 检查输入的 svd_scale 矩阵 ---
-                if torch.isnan(svd_scale).any():
-                    # tqdm.write(f"!!! NaN DETECTED IN INPUT 'svd_scale' BEFORE MATMUL !!! Shape: {svd_scale.shape}")
-                    pass
-                else:
-                    # tqdm.write(f"-> Input 'svd_scale' is clean (no NaNs). Shape: {svd_scale.shape}")
-                    pass
-
-                # 执行我们之前讨论过的高精度乘法
-                W_float32 = W.to(torch.float32)
-                svd_scale_float32 = svd_scale.to(W.device, dtype=torch.float32)
-                W_scale = torch.matmul(W_float32, svd_scale_float32)
-                # tqdm.write(f"-> Matmul operation complete. Resulting shape: {W_scale.shape}")
-
-                # --- 诊断点 3: 检查矩阵乘法的结果 W_scale ---
-                if torch.isnan(W_scale).any():
-                    nan_count = torch.isnan(W_scale).sum().item()
-                    # tqdm.write(f"!!! NaN DETECTED IN 'W_scale' AFTER MATMUL !!! Count: {nan_count}. THIS IS THE PROBLEM SOURCE.")
-                else:
-                    # tqdm.write(f"-> Result 'W_scale' is clean (no NaNs).")
-                    pass
-                    
-                # 将 W_scale (已经是 float32) 送入 SVD 函数
-                U, S, VT = safe_svd(W_scale)
-                
-                # 明确删除不再需要的 float32 临时变量
-                del W_float32, svd_scale_float32, W_scale
-                
+                W_scale = torch.matmul(W, svd_scale.bfloat16().to(W.device))
+                U, S, VT = safe_svd(W_scale.float())
+                del W_scale
                 truc_s = S[:num_s_after_trunc]
                 del S
                 truc_u = U[:, :num_s_after_trunc]
                 del U
-                # 假设 cal_scale_inv 存在
                 truc_v = torch.matmul(VT[:num_s_after_trunc, :], cal_scale_inv(svd_scale).to(W.device))
                 del VT
                 truc_sigma = torch.diag(truc_s)
@@ -382,13 +322,73 @@ class Merge_QwenMoE(nn.Module):
                     svd_u = truc_u
                     svd_v = torch.matmul(truc_sigma, truc_v)
                 else:
-                    # 在开平方根前确保数值非负，增加代码健壮性
-                    sqrtSigma = torch.sqrt(torch.clamp(truc_sigma, min=0.0))
+                    sqrtSigma = torch.sqrt(truc_sigma)
                     svd_u = torch.matmul(truc_u, sqrtSigma)
                     svd_v = torch.matmul(sqrtSigma, truc_v)
-                # =============================================================================
-                # 结束修改
-                # =============================================================================
+
+                # # =============================================================================
+                # # 开始修改：引入高精度计算以避免 NaN 问题
+                # # =============================================================================
+
+                # # --- 诊断点 1: 检查输入的 W 矩阵 ---
+                # if torch.isnan(W).any():
+                #     # tqdm.write(f"!!! NaN DETECTED IN INPUT 'W' BEFORE MATMUL !!! Shape: {W.shape}")
+                #     pass
+                # else:
+                #     # tqdm.write(f"-> Input 'W' is clean (no NaNs). Shape: {W.shape}")
+                #     pass
+
+                # # --- 诊断点 2: 检查输入的 svd_scale 矩阵 ---
+                # if torch.isnan(svd_scale).any():
+                #     # tqdm.write(f"!!! NaN DETECTED IN INPUT 'svd_scale' BEFORE MATMUL !!! Shape: {svd_scale.shape}")
+                #     pass
+                # else:
+                #     # tqdm.write(f"-> Input 'svd_scale' is clean (no NaNs). Shape: {svd_scale.shape}")
+                #     pass
+
+                # # 执行我们之前讨论过的高精度乘法
+                # W_float32 = W.to(torch.float32)
+                # svd_scale_float32 = svd_scale.to(W.device, dtype=torch.float32)
+                # W_scale = torch.matmul(W_float32, svd_scale_float32)
+                # # tqdm.write(f"-> Matmul operation complete. Resulting shape: {W_scale.shape}")
+
+                # # --- 诊断点 3: 检查矩阵乘法的结果 W_scale ---
+                # if torch.isnan(W_scale).any():
+                #     nan_count = torch.isnan(W_scale).sum().item()
+                #     # tqdm.write(f"!!! NaN DETECTED IN 'W_scale' AFTER MATMUL !!! Count: {nan_count}. THIS IS THE PROBLEM SOURCE.")
+                # else:
+                #     # tqdm.write(f"-> Result 'W_scale' is clean (no NaNs).")
+                #     pass
+                    
+                # # 将 W_scale (已经是 float32) 送入 SVD 函数
+                # U, S, VT = safe_svd(W_scale)
+                
+                # # 明确删除不再需要的 float32 临时变量
+                # del W_float32, svd_scale_float32, W_scale
+                
+                # truc_s = S[:num_s_after_trunc]
+                # del S
+                # truc_u = U[:, :num_s_after_trunc]
+                # del U
+                # # 假设 cal_scale_inv 存在
+                # truc_v = torch.matmul(VT[:num_s_after_trunc, :], cal_scale_inv(svd_scale).to(W.device))
+                # del VT
+                # truc_sigma = torch.diag(truc_s)
+                # del truc_s
+                # if absorb_u:
+                #     svd_u = torch.matmul(truc_u, truc_sigma)
+                #     svd_v = truc_v
+                # elif absorb_v:
+                #     svd_u = truc_u
+                #     svd_v = torch.matmul(truc_sigma, truc_v)
+                # else:
+                #     # 在开平方根前确保数值非负，增加代码健壮性
+                #     sqrtSigma = torch.sqrt(torch.clamp(truc_sigma, min=0.0))
+                #     svd_u = torch.matmul(truc_u, sqrtSigma)
+                #     svd_v = torch.matmul(sqrtSigma, truc_v)
+                # # =============================================================================
+                # # 结束修改
+                # # =============================================================================
                 
             elif scale_type == 'asvd':
                 alpha = 0.5
