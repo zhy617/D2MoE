@@ -237,7 +237,7 @@ class Merge_QwenMoE(nn.Module):
             min_val = torch.min(matrix).item()
             max_val = torch.max(matrix).item()
             mean_val = torch.mean(matrix).item()
-            print(f"Matrix stats: min={min_val:.4f}, max={max_val:.4f}, mean={mean_val:.4f}")
+            # print(f"Matrix stats: min={min_val:.4f}, max={max_val:.4f}, mean={mean_val:.4f}")
             # ==================== ⬆️ 诊断代码结束 ⬆️ ====================
 
             if not torch.all(torch.isfinite(matrix)):
@@ -332,28 +332,33 @@ class Merge_QwenMoE(nn.Module):
 
                 # --- 诊断点 1: 检查输入的 W 矩阵 ---
                 if torch.isnan(W).any():
-                    tqdm.write(f"!!! NaN DETECTED IN INPUT 'W' BEFORE MATMUL !!! Shape: {W.shape}")
+                    # tqdm.write(f"!!! NaN DETECTED IN INPUT 'W' BEFORE MATMUL !!! Shape: {W.shape}")
+                    pass
                 else:
-                    tqdm.write(f"-> Input 'W' is clean (no NaNs). Shape: {W.shape}")
+                    # tqdm.write(f"-> Input 'W' is clean (no NaNs). Shape: {W.shape}")
+                    pass
 
                 # --- 诊断点 2: 检查输入的 svd_scale 矩阵 ---
                 if torch.isnan(svd_scale).any():
-                    tqdm.write(f"!!! NaN DETECTED IN INPUT 'svd_scale' BEFORE MATMUL !!! Shape: {svd_scale.shape}")
+                    # tqdm.write(f"!!! NaN DETECTED IN INPUT 'svd_scale' BEFORE MATMUL !!! Shape: {svd_scale.shape}")
+                    pass
                 else:
-                    tqdm.write(f"-> Input 'svd_scale' is clean (no NaNs). Shape: {svd_scale.shape}")
+                    # tqdm.write(f"-> Input 'svd_scale' is clean (no NaNs). Shape: {svd_scale.shape}")
+                    pass
 
                 # 执行我们之前讨论过的高精度乘法
                 W_float32 = W.to(torch.float32)
                 svd_scale_float32 = svd_scale.to(W.device, dtype=torch.float32)
                 W_scale = torch.matmul(W_float32, svd_scale_float32)
-                tqdm.write(f"-> Matmul operation complete. Resulting shape: {W_scale.shape}")
+                # tqdm.write(f"-> Matmul operation complete. Resulting shape: {W_scale.shape}")
 
                 # --- 诊断点 3: 检查矩阵乘法的结果 W_scale ---
                 if torch.isnan(W_scale).any():
                     nan_count = torch.isnan(W_scale).sum().item()
-                    tqdm.write(f"!!! NaN DETECTED IN 'W_scale' AFTER MATMUL !!! Count: {nan_count}. THIS IS THE PROBLEM SOURCE.")
+                    # tqdm.write(f"!!! NaN DETECTED IN 'W_scale' AFTER MATMUL !!! Count: {nan_count}. THIS IS THE PROBLEM SOURCE.")
                 else:
-                    tqdm.write(f"-> Result 'W_scale' is clean (no NaNs).")
+                    # tqdm.write(f"-> Result 'W_scale' is clean (no NaNs).")
+                    pass
                     
                 # 将 W_scale (已经是 float32) 送入 SVD 函数
                 U, S, VT = safe_svd(W_scale)
@@ -411,6 +416,53 @@ class Merge_QwenMoE(nn.Module):
 
     @torch.no_grad()
     def merge_experts(self, module, svd_scale = None, hessian = None, scale_type='svdllm', preprocess_method = None):
+
+        # ==================== ⬇️ 新增的入口扫描代码 ⬇️ ====================
+        import torch
+        from tqdm import tqdm
+
+        def scan_incoming_module(module_to_scan):
+            """
+            在 merge_experts 开始时，立即扫描传入的 module 对象中所有专家的权重。
+            """
+            print("\n" + "-"*60)
+            print("🔬 Performing scan on the module passed to merge_experts...")
+            
+            found_issue = False
+            corrupted_tensors = []
+            
+            # 遍历传入模块中的每一个专家
+            for j in range(self.num_experts):
+                expert = module_to_scan.experts[j]
+                expert_name = f"experts.{j}"
+                
+                # 检查每个专家内部的3个线性层权重
+                for proj_name in ["gate_proj", "up_proj", "down_proj"]:
+                    # 使用 getattr 安全地访问权重
+                    if hasattr(expert, proj_name) and hasattr(getattr(expert, proj_name), 'weight'):
+                        weight = getattr(getattr(expert, proj_name), 'weight')
+                        param_name = f"{expert_name}.{proj_name}.weight"
+                        
+                        if not torch.all(torch.isfinite(weight)):
+                            nan_count = torch.isnan(weight).sum().item()
+                            inf_count = torch.isinf(weight).sum().item()
+                            issue_str = f"Tensor: {param_name}, NaNs: {nan_count}, Infs: {inf_count}"
+                            corrupted_tensors.append(issue_str)
+                            found_issue = True
+
+            if not found_issue:
+                print("✅ VERDICT: Incoming module weights are CLEAN.")
+            else:
+                print("❌ VERDICT: CORRUPTION DETECTED in the incoming module weights!")
+                print("The following tensors were found to be corrupted upon entry to merge_experts:")
+                for issue in corrupted_tensors:
+                    print(f"  - {issue}")
+            print("-" * 60 + "\n")
+
+        # 在函数开始时立即执行扫描
+        scan_incoming_module(module)
+        # ==================== ⬆️ 扫描代码结束 ⬆️ ====================
+
         self.gate.weight.data = module.gate.weight.data
 
         self.shared_expert.gate_proj.weight.data = module.shared_expert.gate_proj.weight.data
@@ -588,10 +640,43 @@ class Merge_QwenMoE(nn.Module):
                 self.experts_delta_v3_shared.weight = shared_v3
 
             if self.delta_share_V == False and self.delta_share_U == False:
+                # tqdm.write("Merging experts with deltaUV, num_experts:", self.num_experts)
                 for j in tqdm(range(self.num_experts), desc="Merging experts", leave=False):
-                    delta_gate = (module.experts[j].gate_proj.weight - self.Wmean_gate.weight)
-                    delta_down = (module.experts[j].down_proj.weight - self.Wmean_down.weight)
-                    delta_up = (module.experts[j].up_proj.weight - self.Wmean_up.weight)
+
+                    # --- 开始：在减法前添加净化步骤 ---
+                    # 使用 torch.nan_to_num 将张量中的任何 Inf 或 NaN 都替换为 0.0
+                    expert_gate_clean = torch.nan_to_num(module.experts[j].gate_proj.weight, nan=0.0, posinf=0.0, neginf=0.0)
+                    mean_gate_clean = torch.nan_to_num(self.Wmean_gate.weight, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    expert_down_clean = torch.nan_to_num(module.experts[j].down_proj.weight, nan=0.0, posinf=0.0, neginf=0.0)
+                    mean_down_clean = torch.nan_to_num(self.Wmean_down.weight, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    expert_up_clean = torch.nan_to_num(module.experts[j].up_proj.weight, nan=0.0, posinf=0.0, neginf=0.0)
+                    mean_up_clean = torch.nan_to_num(self.Wmean_up.weight, nan=0.0, posinf=0.0, neginf=0.0)
+                    # --- 结束：净化步骤 ---
+
+                    # 现在，在净化后的张量上执行减法
+                    delta_gate = (expert_gate_clean - mean_gate_clean)
+                    delta_down = (expert_down_clean - mean_down_clean)
+                    delta_up = (expert_up_clean - mean_up_clean)
+
+                    # delta_gate = (module.experts[j].gate_proj.weight - self.Wmean_gate.weight)
+                    # delta_down = (module.experts[j].down_proj.weight - self.Wmean_down.weight)
+                    # delta_up = (module.experts[j].up_proj.weight - self.Wmean_up.weight)
+
+                    # ==================== ⬇️ 新增的差值矩阵扫描代码 ⬇️ ====================
+                    # tqdm.write(f"--- Scanning delta matrices for expert {j} ---")
+                    has_issue = False
+                    for name, delta_matrix in [("delta_gate", delta_gate), ("delta_down", delta_down), ("delta_up", delta_up)]:
+                        if torch.isnan(delta_matrix).any():
+                            nan_count = torch.isnan(delta_matrix).sum().item()
+                            # tqdm.write(f"  -> ❌ NaN DETECTED in '{name}' for expert {j}! Count: {nan_count}")
+                            has_issue = True
+                    
+                    if not has_issue:
+                        # tqdm.write(f"  -> ✅ Deltas for expert {j} are clean.")
+                        pass
+                    # ==================== ⬆️ 扫描代码结束 ⬆️ ====================
 
                     if svd_scale is not None:
                         base_name = f"mlp.experts.{j}."

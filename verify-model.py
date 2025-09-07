@@ -42,7 +42,7 @@ def verify_model_files(model_path: str):
         try:
             if filepath.endswith(".safetensors"):
                 if safetensors is None:
-                    tqdm.write(f"Skipping {filename} as safetensors library is not installed.")
+                    # tqdm.write(f"Skipping {filename} as safetensors library is not installed.")
                     continue
                 
                 # 使用 safetensors 的安全打开模式，逐个加载张量，非常节省内存

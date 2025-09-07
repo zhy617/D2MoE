@@ -53,12 +53,12 @@ def verify_model_shards_incrementally(model_path: str):
             if corrupted_key:
                 issue = f"File: {filename}, Stage: CPU Loading, Tensor: {corrupted_key}, NaNs: {nans}, Infs: {infs}"
                 corrupted_stages.append(issue)
-                tqdm.write(f"❌ Corruption detected on CPU for {filename}")
+                # tqdm.write(f"❌ Corruption detected on CPU for {filename}")
                 continue # 如果CPU加载就有问题，没必要再检查GPU
         except Exception as e:
             issue = f"File: {filename}, Stage: CPU Loading, Error: {e}"
             corrupted_stages.append(issue)
-            tqdm.write(f"❌ Error loading {filename} to CPU")
+            # tqdm.write(f"❌ Error loading {filename} to CPU")
             continue
 
         # --- 2. GPU 检查 (如果可用) ---
@@ -73,7 +73,7 @@ def verify_model_shards_incrementally(model_path: str):
                 if corrupted_key:
                     issue = f"File: {filename}, Stage: GPU Loading, Tensor: {corrupted_key}, NaNs: {nans}, Infs: {infs}"
                     corrupted_stages.append(issue)
-                    tqdm.write(f"❌ Corruption detected on GPU for {filename}")
+                    # tqdm.write(f"❌ Corruption detected on GPU for {filename}")
                 
                 # 清理显存
                 del state_dict_gpu
@@ -82,7 +82,7 @@ def verify_model_shards_incrementally(model_path: str):
             except Exception as e:
                 issue = f"File: {filename}, Stage: GPU Loading, Error: {e}"
                 corrupted_stages.append(issue)
-                tqdm.write(f"❌ Error loading {filename} to GPU")
+                # tqdm.write(f"❌ Error loading {filename} to GPU")
 
     # --- 最终报告 ---
     print("\n" + "="*60)
