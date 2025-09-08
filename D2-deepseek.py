@@ -155,75 +155,72 @@ def runExperiment():
     # run_lm_eval(model, tokenizer, batch_size=16, task_names=["openbookqa", "arc_easy", "winogrande", "hellaswag",
     #         "arc_challenge", "piqa", "mathqa"], output_dir=save_dir)
     
-     # ===================================================================
-    #                  ⬇️ 在这里添加下面的延迟测试代码 ⬇️
+    # ===================================================================
+    #                  ✅ 开始：标准延迟测试代码块 ✅
     # ===================================================================
     import time
     import numpy as np
+    import json
+
+    cfg['test_stage'] = True  # 确保模型处于测试模式
+    model.eval()  # 设置模型为评估模式
 
     print("\n" + "="*50)
     print(" " * 15 + "Running Latency Test")
     print("="*50)
 
-    # --- 1. 参数设置 ---
-    prompt = "DeepSeek is a large language model developed by" # 用于测试的输入文本
-    # input_tokens = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
-    # 修改点 1：接收完整的 tokenizer 输出 (inputs 字典)
+    # --- 1. 参数设置 (与之前保持一致) ---
+    prompt = "DeepSeek is a large language model developed by"
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device) 
-    n_warmup = 5      # 预热轮数
-    n_runs = 20       # 实际测试轮数
-    max_new_tokens = 100 # 每次生成的目标 token 数量
-
+    n_warmup = 5
+    n_runs = 20
+    max_new_tokens = 100
     latencies = []
 
     # --- 2. 预热 (Warm-up) ---
-    # 第一次推理会包含一些额外的编译开销，预热可以排除这些干扰，让测试结果更准确
     print(f"Running {n_warmup} warm-up rounds...")
     for _ in range(n_warmup):
-        _ = model.generate(input_tokens, max_new_tokens=max_new_tokens, do_sample=False)
-    
-    torch.cuda.synchronize() # 确保所有预热操作在 GPU 上已完成
+        _ = model.generate(
+            **inputs, 
+            max_new_tokens=max_new_tokens, 
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
+    torch.cuda.synchronize()
 
     # --- 3. 正式测试 ---
     print(f"Running {n_runs} test rounds...")
     for _ in tqdm(range(n_runs), desc="Measuring Latency"):
-        torch.cuda.synchronize() # 同步，确保计时器起点准确
+        torch.cuda.synchronize()
         start_time = time.perf_counter()
         
-        # 核心推理步骤
-        # generated_ids = model.generate(input_tokens, max_new_tokens=max_new_tokens, do_sample=False)
+        _ = model.generate(
+            **inputs, 
+            max_new_tokens=max_new_tokens, 
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
         
-        
-        torch.cuda.synchronize() # 同步，确保计时器终点准确
+        torch.cuda.synchronize()
         end_time = time.perf_counter()
-        
-        # 记录本次运行的时间
         latencies.append(end_time - start_time)
 
-    # --- 4. 计算、打印结果并写入JSON文件 ---
-    import json
-
-    total_tokens_generated = n_runs * max_new_tokens
-    total_time_spent = sum(latencies)
-
+    # --- 4. 计算、打印并保存结果 ---
     avg_latency_per_run = np.mean(latencies)
-    avg_latency_per_token = (avg_latency_per_run / max_new_tokens) * 1000  # 转换为毫秒
+    avg_latency_per_token = (avg_latency_per_run / max_new_tokens) * 1000
     tokens_per_second = 1 / (avg_latency_per_run / max_new_tokens)
 
-    # --- 在控制台打印结果 (与之前相同) ---
     print("\n" + "="*50)
     print(" " * 17 + "Latency Test Results")
     print("="*50)
     print(f"Model: {args['base_model_path']}")
     print(f"Test runs: {n_runs}")
     print(f"Generated tokens per run: {max_new_tokens}\n")
-    print(f"➡️ Average latency per run (generating {max_new_tokens} tokens): {avg_latency_per_run:.4f} seconds")
+    print(f"➡️ Average latency per run: {avg_latency_per_run:.4f} seconds")
     print(f"➡️ Average latency per token: {avg_latency_per_token:.2f} ms/token")
     print(f"➡️ Throughput: {tokens_per_second:.2f} tokens/second")
     print("="*50 + "\n")
 
-
-    # --- 将关键参数和结果组织成一个字典 ---
     latency_results = {
         "experiment_parameters": {
             "base_model": args['base_model_path'],
@@ -244,15 +241,17 @@ def runExperiment():
             "throughput_tokens_per_sec": round(tokens_per_second, 2)
         }
     }
-
-    # --- 将字典写入 JSON 文件 ---
-    # save_dir 是你脚本前面已经定义好的结果保存目录
+    
     latency_json_path = os.path.join(save_dir, "latency_results.json")
     with open(latency_json_path, "w") as f:
         json.dump(latency_results, f, indent=4)
-
     print(f"Latency results saved to: {latency_json_path}")
+    # ===================================================================
+    #                   ✅ 结束：标准延迟测试代码块 ✅
+    # ===================================================================
+    
     return
+
 
 
 def run_calibration(model, data_loader):    
